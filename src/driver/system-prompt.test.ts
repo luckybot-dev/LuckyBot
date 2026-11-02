@@ -138,6 +138,23 @@ describe('participation tuning wording', () => {
     expect(probe).toContain('clearly invites a reaction');
   });
 
+  // `react_only` is a dead end for a direct address: primary gets no
+  // `send_message`, and the reaction advances lastActedAtMs, so the unanswered
+  // message is never revisited. The downgrade must therefore require *both* a
+  // persona brawl and an exhausted two-round exchange, not either alone.
+  it('downgrades a direct address only for a pure persona brawl past two rounds', async () => {
+    const probe = await renderTemplate('system.velin.md', { mode: 'probe', ...SYSTEM_PROPS });
+    expect(probe).toContain(
+      "if (it only taunts or insults the chatbot's personality, temper or skill && that back-and-forth with this person has already run two rounds with nothing new on either side) return \"react_only\";",
+    );
+    // Content that carries information to answer must never be swallowed.
+    expect(probe).toContain('Anything that asks');
+    expect(probe).toContain('earns');
+    expect(probe).toContain('even in the third round');
+    // The old one-clause form was too broad: "taunts" alone, or round count alone, downgraded.
+    expect(probe).not.toContain('such as taunts or insults about the chatbot');
+  });
+
   it('renders the participation style and brake threshold from chat config', async () => {
     const render = (participationStyle: 'quiet' | 'normal' | 'lively') =>
       renderTemplate('system.velin.md', { mode: 'probe', ...SYSTEM_PROPS, participationStyle, brakeMessages10m: 6 });

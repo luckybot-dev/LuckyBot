@@ -204,8 +204,14 @@ if (an unanswered message from a human since the chatbot last acted @-mentions i
   // judged by arrival order in this chatlog, not by `t`: a late-delivered message (marked
   // `received`) that addresses the chatbot and has not been answered is still a direct address.
   if (the style guideline says the chatbot should stay silent) return "no_action";
-  // An argument that keeps going is not a fresh address: let it end instead of answering every jab.
-  if (it only continues a back-and-forth with this person that has already run two rounds with nothing new on either side, such as taunts or insults about the chatbot's personality or temper) return "react_only";
+  // A direct address normally gets an answer, and `react_only` is a dead end: it exposes
+  // no `send_message`, and the reaction counts as the chatbot's latest action, so the
+  // unanswered message is never revisited. Downgrade only a pure persona brawl — the
+  // exchange has already run two rounds with nothing new on either side AND the message
+  // only taunts or insults the chatbot's personality, temper or skill. Anything that asks
+  // a question, states a claim to answer, corrects a fact, or brings new information earns
+  // `send_message` even in the third round.
+  if (it only taunts or insults the chatbot's personality, temper or skill && that back-and-forth with this person has already run two rounds with nothing new on either side) return "react_only";
   return "send_message";
 }
 if (the latest message was authored by another bot) {
