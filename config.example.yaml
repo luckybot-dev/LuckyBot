@@ -51,6 +51,17 @@ telegram:
 
 database:
   path: "./data/cahciua.db"
+  # History retention, applied once at startup. Both ages are in days and
+  # default to 0 (keep forever). Only rows no reader can reach are eligible:
+  # turn responses older than both the age *and* the compaction cursor, and
+  # probe responses older than the age (they are an audit trail; nothing loads
+  # them back into context). Set vacuumMinFreeRatio (e.g. 0.25) to run VACUUM
+  # after a prune — that is what returns disk, but it needs free space equal to
+  # the database size.
+  # retention:
+  #   turnResponsesDays: 30
+  #   probeResponsesDays: 14
+  #   vacuumMinFreeRatio: 0.25
 
 # Modular plugins (docs/plugins.md).
 # Plugins are mounted under plugins/ and declared statically.

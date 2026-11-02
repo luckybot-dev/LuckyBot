@@ -4,6 +4,7 @@ import { buildContainer } from '../container';
 import { TOKENS } from '../container/tokens';
 import { loadCompaction, loadEventsWithId, loadKnownChatIds, migrateV1ToV2 } from '../db';
 import { selectStartupReplayChatIds } from './chat-selection';
+import { pruneRetainedHistory } from './retention';
 
 export const startApp = async (): Promise<void> => {
   const container = buildContainer();
@@ -80,6 +81,11 @@ export const startApp = async (): Promise<void> => {
       knownSessions: knownChatIds.length,
       replaySessions: replayChatIds.length,
     }).log('Startup chat selection');
+
+    // Retention runs before replay and before any wake-up: it only deletes rows
+    // older than the compaction cursor, and replay already starts at that
+    // cursor, so nothing below can miss what was removed.
+    pruneRetainedHistory(db, container.get(TOKENS.CONFIG), replayChatIds, logger);
 
     for (const chatId of replayChatIds) {
       const compaction = loadCompaction(db, chatId);

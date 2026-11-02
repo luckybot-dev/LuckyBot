@@ -326,6 +326,21 @@ const ConfigSchema = v.object({
   }, 'feishu must be a mapping')),
   database: v.optional(v.object({
     path: v.optional(v.string(), './data/cahciua.db'),
+    /**
+     * History retention, run once at startup per chat. Both cutoffs are
+     * absolute ages in days; `0` (the default) keeps everything, matching the
+     * behaviour before retention existed.
+     *
+     * Only rows no reader can reach are eligible — see `src/db/retention.ts`
+     * for why the compaction cursor bounds `turn_responses_v2` and why
+     * `probe_responses_v2` is bounded by its own newest row.
+     */
+    retention: v.optional(v.object({
+      turnResponsesDays: v.optional(v.number(), 0),
+      probeResponsesDays: v.optional(v.number(), 0),
+      /** Run `VACUUM` after a prune when this share of pages is free. */
+      vacuumMinFreeRatio: v.optional(v.number(), 0),
+    }), {}),
   }), {}),
   /**
    * Root of the person-memory Markdown store (`<memoryDir>/<chatId>/...`). Must
