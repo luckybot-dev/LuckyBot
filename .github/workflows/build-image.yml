@@ -80,7 +80,13 @@ jobs:
       # ship the image over SSH: the runner already holds the built layers, so
       # this costs one compressed transfer and no registry permission at all.
       - name: Tag the image for transfer
-        run: docker tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA:0:7}" larkbot:incoming
+        run: |
+          # metadata-action's `sha` tag is already short (7 chars) while
+          # GITHUB_SHA is the full 40-char hash, so read the tag back instead of
+          # reconstructing it.
+          image=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
+          echo "tagging $image as larkbot:incoming"
+          docker tag "$image" larkbot:incoming
 
       - name: Set up SSH to the deploy host
         run: |
