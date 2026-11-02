@@ -64,6 +64,10 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64
           push: true
+          # `load: true` keeps the built image in the local daemon for the
+          # transfer below. Pulling it back from GHCR instead would need
+          # read:packages, which the push credential does not have.
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # BuildKit cache lives in the Actions cache, so a rebuild after a
@@ -75,10 +79,8 @@ jobs:
       # read it (org packages need read:packages). Rather than widen that token,
       # ship the image over SSH: the runner already holds the built layers, so
       # this costs one compressed transfer and no registry permission at all.
-      - name: Load the image locally for transfer
-        run: |
-          docker pull --quiet "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA:0:7}"
-          docker tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA:0:7}" larkbot:incoming
+      - name: Tag the image for transfer
+        run: docker tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA:0:7}" larkbot:incoming
 
       - name: Set up SSH to the deploy host
         run: |
