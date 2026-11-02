@@ -84,6 +84,41 @@ Fallback: build on the host with `cd deploy && sudo docker compose up -d
 The first build takes a few minutes (native modules compile from source);
 later builds reuse the layer cache.
 
+#### Or: let CI build and ship it
+
+`.github/workflows/build-image.yml` builds on every push to `main`, publishes
+the image to GHCR, and then ships it to the deployment host over SSH, where it
+arrives tagged `larkbot:local` — the tag `deploy/docker-compose.yml` expects.
+Nothing needs a toolchain locally and no image crosses your own connection.
+
+The restart stays manual (it is an outward-facing change), so deploying a
+merged change is just:
+
+```sh
+ssh root@host 'cd /path/to/deploy && docker compose up -d larkbot'
+```
+
+Setup, once:
+
+1. On the deployment host, create a key dedicated to this and authorize it:
+   ```sh
+   ssh-keygen -t ed25519 -f ~/.ssh/gha_deploy -N '' -C 'github-actions-deploy'
+   cat ~/.ssh/gha_deploy.pub >> ~/.ssh/authorized_keys
+   ```
+2. In the repository settings, add:
+   - secret `DEPLOY_SSH_KEY_B64` — `base64 -w0 ~/.ssh/gha_deploy` from the host
+     (base64 so a stray newline cannot corrupt the key);
+   - secret `DEPLOY_HOST_KEY` — the host's pinned key, e.g.
+     `ssh-keyscan host | grep ed25519`. Pinning it means the runner never trusts
+     an unverified key on first connection;
+   - variables `DEPLOY_SSH_HOST`, `DEPLOY_SSH_PORT`, `DEPLOY_SSH_USER`.
+3. Leave `DEPLOY_SSH_HOST` unset on a fork: the transfer steps then skip and
+   the workflow only publishes to GHCR.
+
+The image transfer is a plain `docker save | gzip | ssh … docker load`; the
+host does not need to read the GHCR package, which keeps a registry credential
+off the machine.
+
 ## 3. One-time setup
 
 ### 3.1 Files next to the compose file

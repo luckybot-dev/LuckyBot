@@ -1,12 +1,9 @@
 name: Build bot image
 
-# Builds the bot image in CI and publishes it to GHCR, so a deployment pulls a
-# ready image instead of building on the host. The cloud host has ~900 MB free
-# RAM and no Docker build cache of its own, so an on-host build recompiles
-# better-sqlite3 and lottie-frame from source every time and risks the OOM
-# killer taking out a co-tenant container.
+# Builds the bot image in CI and publishes it to GHCR, so a deployment pulls or
+# receives a ready image instead of compiling native dependencies on the host.
 #
-# Deploy is deliberately not automated: `docker compose up -d` against the live
+# Deploy is deliberately not automated: `docker compose up -d` against a live
 # bot is an outward-facing action that stays with the operator.
 
 on:
@@ -75,10 +72,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # The GHCR package is private and the deploy host's registry login cannot
-      # read it (org packages need read:packages). Rather than widen that token,
-      # ship the image over SSH: the runner already holds the built layers, so
-      # this costs one compressed transfer and no registry permission at all.
+      # A private GHCR package needs read:packages to pull back, which the
+      # workflow's push credential does not carry. Rather than widen it, ship
+      # the image over SSH: the runner already holds the built layers, so this
+      # costs one compressed transfer and no registry permission at all. Both
+      # transfer steps are skipped when DEPLOY_SSH_HOST is unset, so a fork
+      # builds and publishes without needing a deploy target.
       - name: Tag the image for transfer
         run: |
           # metadata-action's `sha` tag is already short (7 chars) while
@@ -88,17 +87,21 @@ jobs:
           echo "tagging $image as larkbot:incoming"
           docker tag "$image" larkbot:incoming
 
+      # The key is stored base64-encoded because a raw PEM in a repository
+      # secret trips secret scanners and is easy to mangle with stray newlines.
       - name: Set up SSH to the deploy host
+        if: ${{ vars.DEPLOY_SSH_HOST != '' }}
         run: |
           install -m 700 -d ~/.ssh
-          echo "${{ secrets.CLOUD_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/deploy_key
+          echo "${{ secrets.DEPLOY_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          # Pin the host key from the secret rather than trusting whatever the
-          # network answers with on the first connection.
-          echo "${{ secrets.CLOUD_HOST_KEY }}" > ~/.ssh/known_hosts
+          # Pin the host key rather than trusting whatever the network answers
+          # with on the first connection.
+          echo "${{ secrets.DEPLOY_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
       - name: Ship the image to the deploy host
+        if: ${{ vars.DEPLOY_SSH_HOST != '' }}
         run: |
           docker save larkbot:incoming \
             | gzip -1 \
@@ -114,5 +117,6 @@ jobs:
       # workflow only guarantees the image is on the host and tagged
       # larkbot:local, which is what deploy/docker-compose.yml expects.
       - name: Note the remaining manual step
+        if: ${{ vars.DEPLOY_SSH_HOST != '' }}
         run: |
-          echo "::notice::Image loaded on the deploy host as larkbot:local. Run 'cd /opt/larkbot/deploy && docker compose up -d larkbot' there to switch to it."
+          echo "::notice::Image loaded on the deploy host as larkbot:local. Run 'docker compose up -d larkbot' from the deployment's deploy/ directory there to switch to it."
