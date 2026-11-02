@@ -118,6 +118,23 @@ RUN set -eux; \
     done; \
     [ "$missing" -eq 0 ]
 
+# Deployment-private files are bind-mounted at runtime and must never be baked
+# into the image. .dockerignore already keeps them out of the build context;
+# this is the backstop for a build that skips or mis-edits that file, which
+# matters now that CI builds from the public repository and cannot see the
+# operator's checkout. Every path here is either a secret (config.yaml holds the
+# Feishu app secret and model API keys; .config/ holds the sandbox SSH key) or a
+# deployment-local policy file that differs per host.
+RUN set -eux; \
+    leaked=0; \
+    for path in config.yaml contacts.json prompts/IDENTITY.md \
+                deploy/.env deploy/docker-compose.override.yml prompts/group-policy.md; do \
+      if [ -e "/app/$path" ]; then \
+        echo "deployment-private file reached the image: $path" >&2; leaked=1; \
+      fi; \
+    done; \
+    [ "$leaked" -eq 0 ]
+
 RUN ln -s /usr/local/lib/node_modules/tsx /app/node_modules/tsx \
  && chmod 0755 /usr/local/bin/sandbox-exec /usr/local/bin/larkbot-entrypoint \
  && mkdir -p /app/data /app/.config \

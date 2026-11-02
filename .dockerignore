@@ -20,7 +20,17 @@ contacts.json
 .env
 .env.*
 !.env.example
-prompts/IDENTITY.md
+# Deployment-local prompts. prompts/ is an allowlist rather than a blanket
+# exclusion because the tracked templates (system.velin.md, IDENTITY.example.md,
+# style-enforcements.md, …) must still reach the builder. Everything else there
+# is operator-edited and per-host: IDENTITY.md is the live persona, and a chat's
+# `systemFiles` may add more (docs/deploy.md). Prompts are text, so a stray one
+# costs a few KB of build context — but the Dockerfile's private-file check
+# fails the build if any of them ends up in the image.
+prompts/*
+!prompts/*.velin.md
+!prompts/style-enforcements.md
+!prompts/IDENTITY.example.md
 deploy/secrets
 deploy/known_hosts
 deploy/sandbox_authorized_keys
