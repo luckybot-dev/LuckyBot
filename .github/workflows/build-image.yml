@@ -70,3 +70,41 @@ jobs:
           # prompt-only change reuses the expensive apt/pnpm/node-gyp layers.
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The GHCR package is private and the deploy host's registry login cannot
+      # read it (org packages need read:packages). Rather than widen that token,
+      # ship the image over SSH: the runner already holds the built layers, so
+      # this costs one compressed transfer and no registry permission at all.
+      - name: Load the image locally for transfer
+        run: |
+          docker pull --quiet "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA:0:7}"
+          docker tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA:0:7}" larkbot:incoming
+
+      - name: Set up SSH to the deploy host
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.CLOUD_SSH_KEY_B64 }}" | base64 -d > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pin the host key from the secret rather than trusting whatever the
+          # network answers with on the first connection.
+          echo "${{ secrets.CLOUD_HOST_KEY }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Ship the image to the deploy host
+        run: |
+          docker save larkbot:incoming \
+            | gzip -1 \
+            | ssh -i ~/.ssh/deploy_key \
+                -o IdentitiesOnly=yes \
+                -o BatchMode=yes \
+                -o ConnectTimeout=20 \
+                -p "${{ vars.DEPLOY_SSH_PORT || 22 }}" \
+                "${{ vars.DEPLOY_SSH_USER || 'root' }}@${{ vars.DEPLOY_SSH_HOST }}" \
+                'gunzip | docker load && docker tag larkbot:incoming larkbot:local && docker image prune -f --filter "until=24h" >/dev/null'
+
+      # Restarting the live bot is outward-facing, so it stays manual: this
+      # workflow only guarantees the image is on the host and tagged
+      # larkbot:local, which is what deploy/docker-compose.yml expects.
+      - name: Note the remaining manual step
+        run: |
+          echo "::notice::Image loaded on the deploy host as larkbot:local. Run 'cd /opt/larkbot/deploy && docker compose up -d larkbot' there to switch to it."
