@@ -125,6 +125,7 @@ const makeReactOnlyHarness = () => {
   const deps: Parameters<typeof createDriver>[1] = {
     name: 'telegram',
     loadTurnResponses: async () => [...persistedTRs],
+    loadLastTurnResponse: async () => ([...persistedTRs]).at(-1) ?? null,
     persistTurnResponse: async (_, tr) => { persistedTRs.push(tr); },
     persistProbeResponse: async (_, probe) => { persistedProbes.push(probe); },
     sendMessage: async (_chatId, text) => { sendMessageCalls.push(text); return { messageId: '999' }; },
@@ -219,6 +220,7 @@ describe('probe vs primary view of bot\'s own messages', () => {
       {
         name: 'telegram',
         loadTurnResponses: async () => [...trs, ...persistedTRs],
+        loadLastTurnResponse: async () => ([...trs, ...persistedTRs]).at(-1) ?? null,
         persistTurnResponse: async (_, tr) => { persistedTRs.push(tr); },
         persistProbeResponse: async () => {},
         sendMessage: async () => ({ messageId: '999' }),
@@ -336,6 +338,7 @@ describe('probe vs primary view of bot\'s own messages', () => {
       {
         name: 'telegram',
         loadTurnResponses: async () => [...persistedTRs],
+        loadLastTurnResponse: async () => ([...persistedTRs]).at(-1) ?? null,
         persistTurnResponse: async (_, tr) => { persistedTRs.push(tr); },
         persistProbeResponse: async () => {},
         sendMessage: async (_chatId, text) => { sendMessageCalls.push({ text }); return { messageId: '999' }; },
@@ -402,6 +405,7 @@ describe('probe vs primary view of bot\'s own messages', () => {
       {
         name: 'telegram',
         loadTurnResponses: async () => [...persistedTRs],
+        loadLastTurnResponse: async () => ([...persistedTRs]).at(-1) ?? null,
         persistTurnResponse: async (_, tr) => { persistedTRs.push(tr); },
         persistProbeResponse: async () => {},
         sendMessage: async () => ({ messageId: '999' }),
@@ -546,6 +550,7 @@ describe('probe vs primary view of bot\'s own messages', () => {
       {
         name: 'telegram',
         loadTurnResponses: async () => [...persistedTRs],
+        loadLastTurnResponse: async () => ([...persistedTRs]).at(-1) ?? null,
         persistTurnResponse: async (_, tr) => { persistedTRs.push(tr); },
         persistProbeResponse: async () => {},
         sendMessage: async () => ({ messageId: '999' }),

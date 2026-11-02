@@ -389,6 +389,21 @@ export const loadTurnResponses = async (db: DB, chatId: string, afterMs?: number
   return await Promise.all(rows.map(reconstructTurnResponseV2));
 };
 
+// Startup needs two facts that both live on the newest row: the timestamp of
+// the last turn, and whether its tool results left an open continuation.
+// `loadTurnResponses` without `afterMs` reads and decodes the whole table for
+// that, which on a long-lived chat is tens of MB of JSON re-inflated into
+// objects twice per boot — enough to exhaust the container's heap before the
+// first wake-up. Read one row instead.
+export const loadLastTurnResponse = async (db: DB, chatId: string): Promise<TurnResponseV2 | null> => {
+  const row = db.select().from(turnResponsesV2)
+    .where(eq(turnResponsesV2.chatId, chatId))
+    .orderBy(desc(turnResponsesV2.requestedAt), desc(turnResponsesV2.id))
+    .limit(1)
+    .get();
+  return row ? await reconstructTurnResponseV2(row) : null;
+};
+
 // --- Compaction storage (append-only) ---
 
 export const persistCompaction = (db: DB, chatId: string, meta: CompactionSessionMeta) => {

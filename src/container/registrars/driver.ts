@@ -8,6 +8,7 @@ import {
   loadEventsWithId,
   loadImageAltTextByHash,
   loadLastProbeTime,
+  loadLastTurnResponse,
   loadLatestMessageContent,
   loadMessageAttachments,
   loadMessageIds,
@@ -128,6 +129,7 @@ export const registerDriver = ({ get, register }: Registrar): void => {
     }, {
       ...platform,
       loadTurnResponses: (chatId, afterMs) => loadTurnResponses(db, chatId, afterMs),
+      loadLastTurnResponse: chatId => loadLastTurnResponse(db, chatId),
       persistTurnResponse: (chatId, response) => persistTurnResponse(db, chatId, response),
       persistProbeResponse: (chatId, response) => persistProbeResponse(db, chatId, response),
       loadCompaction: chatId => loadCompaction(db, chatId),

@@ -29,6 +29,10 @@ export type { TurnResponseV2, ProbeResponseV2 } from './types';
 // Platform capabilities are spread flat into deps (see DriverPlatform).
 export const createDriver = (config: DriverConfig, deps: DriverPlatform & {
   loadTurnResponses: (chatId: string, afterMs?: number) => Promise<TurnResponseV2[]>;
+  // Newest turn response only. Startup reads it twice (last processed time,
+  // open-continuation check); loading the whole table for that exhausts the
+  // heap on a long-lived chat.
+  loadLastTurnResponse: (chatId: string) => Promise<TurnResponseV2 | null>;
   persistTurnResponse: (chatId: string, tr: TurnResponseV2) => Promise<void>;
   persistProbeResponse: (chatId: string, probe: ProbeResponseV2) => Promise<void>;
   loadCompaction: (chatId: string) => CompactionSessionMeta | null;
@@ -67,10 +71,9 @@ export const createDriver = (config: DriverConfig, deps: DriverPlatform & {
   const isMaintainer = config.isMaintainer ?? (() => false);
 
   const getLastProcessedTime = async (chatId: string): Promise<number> => {
-    const trs = await deps.loadTurnResponses(chatId);
-    const lastTr = trs.length > 0 ? trs[trs.length - 1]!.requestedAtMs : 0;
+    const lastTr = await deps.loadLastTurnResponse(chatId);
     const lastProbe = deps.loadLastProbeTime(chatId);
-    return Math.max(lastTr, lastProbe);
+    return Math.max(lastTr?.requestedAtMs ?? 0, lastProbe);
   };
 
   const chatScopes = new Map<string, {
@@ -90,7 +93,11 @@ export const createDriver = (config: DriverConfig, deps: DriverPlatform & {
     // A persisted requiresFollowUp result keeps the wake-up eligible after restart.
     const lastTRInterrupted = signal(false);
     void getLastProcessedTime(chatId).then(v => lastProcessedMs(Math.max(lastProcessedMs(), v)));
-    void deps.loadTurnResponses(chatId).then(trs => lastTRInterrupted(wasToolLoopInterrupted(trs)));
+    // `wasToolLoopInterrupted` only inspects the newest response, so wrap the
+    // single row rather than loading the table.
+    void deps.loadLastTurnResponse(chatId)
+      .then(last => lastTRInterrupted(last != null && wasToolLoopInterrupted([last])))
+      .catch(error => log.withError(error).withFields({ chatId }).warn('Failed to load the last turn response'));
     const failedRc = signal<RenderedContext | null>(null);
 
     const compactionMeta = signal<CompactionSessionMeta | null>(

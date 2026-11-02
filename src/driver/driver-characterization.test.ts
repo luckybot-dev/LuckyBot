@@ -77,6 +77,7 @@ type DriverDeps = Parameters<typeof createDriver>[1];
 const makeDriverDeps = (overrides: Partial<DriverDeps> = {}): DriverDeps => ({
   name: 'telegram',
   loadTurnResponses: async () => [],
+  loadLastTurnResponse: async () => ([]).at(-1) ?? null,
   persistTurnResponse: async () => {},
   persistProbeResponse: async () => {},
   sendMessage: async () => ({ messageId: '1' }),
@@ -198,6 +199,12 @@ describe('Driver probe gate characterization', () => {
       loadTurnResponses: async () => {
         if (probePersisted) loadsAfterProbePersistence++;
         return persistedTurns;
+      },
+      // The startup single-row path must share the mock's counter, so it can be
+      // observed just like the full-table path.
+      loadLastTurnResponse: async () => {
+        if (probePersisted) loadsAfterProbePersistence++;
+        return persistedTurns.at(-1) ?? null;
       },
       persistProbeResponse: async (_chatId, probe) => {
         persistedProbes.push(probe);
@@ -343,6 +350,7 @@ describe('Probe timeout and wake-up liveness', () => {
     });
     startDriver('mid-chain-retry', makeDriverDeps({
       loadTurnResponses: async () => [...persistedTurns],
+      loadLastTurnResponse: async () => ([...persistedTurns]).at(-1) ?? null,
       persistTurnResponse: async (_chatId, turn) => { persistedTurns.push(turn); },
       readOldMessages: () => '<message id="1">old</message>',
     })).handleEvent('mid-chain-retry', buildExternalContext());
@@ -407,6 +415,7 @@ describe('Turn budget across interruption chains', () => {
 
     const driver = startDriver('chain-budget', makeDriverDeps({
       loadTurnResponses: async () => [...persistedTurns],
+      loadLastTurnResponse: async () => ([...persistedTurns]).at(-1) ?? null,
       persistTurnResponse: async (_chatId, turn) => { persistedTurns.push(turn); },
       persistProbeResponse: async (_chatId, probe) => { persistedProbes.push(probe); },
       loadLastProbeTime: () => 0,

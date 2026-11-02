@@ -262,6 +262,7 @@ const makeHarness = () => {
   const deps: Parameters<typeof createDriver>[1] = {
     name: 'telegram',
     loadTurnResponses: async () => [...persistedTRs],
+    loadLastTurnResponse: async () => ([...persistedTRs]).at(-1) ?? null,
     persistTurnResponse: async (_chatId, tr) => { persistedTRs.push(tr); },
     persistProbeResponse: async () => {},
     sendMessage: async () => ({ messageId: '999' }),
