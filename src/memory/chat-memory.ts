@@ -19,6 +19,8 @@ export interface ChatMemory {
   injecting: boolean;
   // Read once per wake-up; absent when nothing is injected.
   loadSnapshot?: (context: RenderedContext) => MemorySnapshot | null;
+  // Consecutive failed consolidations; 0 when memory is disabled.
+  consecutiveFailures: () => number;
   dispose: () => void;
 }
 
@@ -37,7 +39,7 @@ export const createChatMemory = (params: {
 }): ChatMemory => {
   const { chatId, chatConfig, deps, log } = params;
   const config = chatConfig.memory;
-  if (!deps || !config.enabled) return { injecting: false, dispose: () => {} };
+  if (!deps || !config.enabled) return { injecting: false, consecutiveFailures: () => 0, dispose: () => {} };
 
   const blockedUserIds = new Set(chatConfig.blockedUserIds);
   const endpoint = config.model ?? chatConfig.compaction.model ?? chatConfig.primary.model;
@@ -69,6 +71,7 @@ export const createChatMemory = (params: {
     ...(config.inject
       ? { loadSnapshot: createMemorySnapshotLoader({ chatId, config, backend: deps.backend, blockedUserIds, log: memoryLog }) }
       : {}),
+    consecutiveFailures: controller.consecutiveFailures,
     dispose: controller.dispose,
   };
 };

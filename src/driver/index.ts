@@ -13,6 +13,10 @@ import type { CahciuaTool } from './tools';
 import { isTransientModelError } from './transient-error';
 import type { CompactionSessionMeta, DriverConfig, ProbeResponseV2, TurnResponseV2 } from './types';
 import { executeWakeup } from './wakeup';
+import { createWakeupHealth, isRequestTimeout } from './wakeup-health';
+import type { WakeupStage } from './wakeup-health';
+import { createWatchdog } from './watchdog';
+import type { WatchdogChat } from './watchdog';
 import type { ActiveTaskInfo } from '../background-task/types';
 import type { RuntimeConfig } from '../config/config';
 import type { LlmEndpoint } from '../llm/types';
@@ -80,6 +84,7 @@ export const createDriver = (config: DriverConfig, deps: DriverPlatform & {
     rc: ReturnType<typeof signal<RenderedContext>>;
     notifyTyping: () => void;
     cleanup: () => void;
+    watchdog: WatchdogChat;
   }>();
 
   const getOrCreateScope = (chatId: string) => {
@@ -146,8 +151,11 @@ export const createDriver = (config: DriverConfig, deps: DriverPlatform & {
       log,
     });
 
+    const health = createWakeupHealth();
+
     const scheduler = createReplyScheduler({
       chatId,
+      health,
       debounce: chatConfig.debounce,
       context: rc,
       lastProcessedMs,
@@ -158,6 +166,10 @@ export const createDriver = (config: DriverConfig, deps: DriverPlatform & {
       execute: async (contextAtStart, retry) => {
         // Survives a primary failure so the retry need not rerun probe.
         let probeActivation = retry?.probeActivation;
+        const startedAtMs = Date.now();
+        // Mutated from executeWakeup callbacks; an object so the catch block
+        // sees the latest stage rather than a narrowed initial literal.
+        const progress: { stage: WakeupStage; probeStartedAtMs?: number } = { stage: 'prepare' };
         try {
           const activeScenes = deps.getActiveScenes?.(chatId) ?? [];
           const effectiveChatConfig = applySceneOverrides(chatConfig, activeScenes);
@@ -194,6 +206,14 @@ export const createDriver = (config: DriverConfig, deps: DriverPlatform & {
             isMaintainer,
             probeActivation,
             onProbeActivated: activation => { probeActivation = activation; },
+            onStage: next => {
+              progress.stage = next;
+              if (next === 'probe') progress.probeStartedAtMs = Date.now();
+            },
+            onProbeComplete: ({ elapsedMs, malformed }) => {
+              health.recordProbeLatency(elapsedMs);
+              if (malformed) health.recordProbeMalformed();
+            },
             probeWindow,
             memoryEnabled: memory.injecting,
             loadMemorySnapshot: memory.loadSnapshot,
@@ -205,8 +225,17 @@ export const createDriver = (config: DriverConfig, deps: DriverPlatform & {
           return { kind: 'done' };
         } catch (error) {
           const transient = isTransientModelError(error);
-          log.withError(error).withFields({ chatId, transient }).error('LLM call failed');
-          return transient ? { kind: 'transient-failure', probeActivation } : { kind: 'failure' };
+          const now = Date.now();
+          const failure = {
+            stage: progress.stage,
+            probeTimeout: progress.stage === 'probe' && isRequestTimeout(error),
+            elapsedMs: now - startedAtMs,
+          };
+          if (progress.stage === 'probe' && progress.probeStartedAtMs != null)
+            health.recordProbeLatency(now - progress.probeStartedAtMs);
+          health.recordFailure(failure);
+          log.withError(error).withFields({ chatId, transient, ...failure }).error('LLM call failed');
+          return { kind: transient ? 'transient-failure' : 'failure', probeActivation, failure };
         } finally {
           try {
             const responses = await deps.loadTurnResponses(chatId, cursorMs());
@@ -224,7 +253,18 @@ export const createDriver = (config: DriverConfig, deps: DriverPlatform & {
       memory.dispose();
     };
 
-    const entry = { rc, notifyTyping: scheduler.notifyTyping, cleanup };
+    const entry = {
+      rc,
+      notifyTyping: scheduler.notifyTyping,
+      cleanup,
+      watchdog: {
+        chatId,
+        scheduler,
+        health,
+        compactionFailures: compaction.consecutiveFailures,
+        memoryFailures: memory.consecutiveFailures,
+      },
+    };
     chatScopes.set(chatId, entry);
     return entry;
   };
@@ -239,11 +279,30 @@ export const createDriver = (config: DriverConfig, deps: DriverPlatform & {
     getOrCreateScope(chatId).notifyTyping();
   };
 
+  const watchdog = config.watchdog
+    ? createWatchdog({
+        config: config.watchdog,
+        *chats() {
+          for (const scope of chatScopes.values()) yield scope.watchdog;
+        },
+        log: log.withContext('watchdog'),
+      })
+    : undefined;
+
+  // Called by startup once input is active; stop() also stops it.
+  const start = () => {
+    watchdog?.start();
+  };
+
   const stop = () => {
+    watchdog?.stop();
     for (const scope of chatScopes.values())
       scope.cleanup();
     chatScopes.clear();
   };
 
-  return { handleEvent, handleTyping, stop };
+  // In-memory wake-up failure counters; undefined until the chat has seen input.
+  const wakeupCounters = (chatId: string) => chatScopes.get(chatId)?.watchdog.health.counters();
+
+  return { handleEvent, handleTyping, start, stop, wakeupCounters };
 };

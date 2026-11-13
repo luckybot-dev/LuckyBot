@@ -224,6 +224,8 @@ export const createCompactionController = (deps: {
   return {
     cursorMs,
     summary,
+    // Read-only, for the watchdog; the backoff itself is unchanged.
+    consecutiveFailures: (): number => consecutiveFailures,
     dispose(): void {
       disposed = true;
       if (timer) clearTimeout(timer);

@@ -640,3 +640,99 @@ describe('Runner persistence and force-tool characterization', () => {
     expect(onStepComplete).not.toHaveBeenCalled();
   });
 });
+
+describe('Wake-up failure attribution and watchdog rearm', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const advanceUntil = async (condition: () => boolean): Promise<void> => {
+    for (let i = 0; i < 200 && !condition(); i++) {
+      await vi.advanceTimersByTimeAsync(500);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+  };
+
+  const activate = () => ({
+    entries: toolCallEntries('probe', 'decide', JSON.stringify({ should_act: 'send_message', reason: 'r' })),
+    usage: makeUsage(),
+  });
+
+  it('tags exhausted probe timeouts as probe-stage timeouts, not primary failures', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    mockCallLlm.mockImplementation(async () => { throw new Error('chat request timed out after 15s'); });
+    const driver = startDriver('attr-probe-timeout', makeDriverDeps());
+    driver.handleEvent('attr-probe-timeout', buildExternalContext());
+
+    // Three attempts (initial + 5 s + 20 s), then abandoned.
+    await advanceUntil(() => driver.wakeupCounters('attr-probe-timeout')?.abandoned === 1);
+    expect(driver.wakeupCounters('attr-probe-timeout')).toMatchObject({
+      probeTimeouts: 3,
+      probeFailures: 0,
+      primaryFailures: 0,
+      abandoned: 1,
+    });
+  });
+
+  it('tags a permanent primary error as a primary failure after a successful probe', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    mockCallLlm.mockImplementation(async config => {
+      if (config.model === 'mock-probe') return activate();
+      throw new Error('Chat Completions API 400: bad request');
+    });
+    const driver = startDriver('attr-primary', makeDriverDeps());
+    driver.handleEvent('attr-primary', buildExternalContext());
+
+    await advanceUntil(() => driver.wakeupCounters('attr-primary')?.abandoned === 1);
+    expect(driver.wakeupCounters('attr-primary')).toMatchObject({
+      probeTimeouts: 0,
+      probeFailures: 0,
+      primaryFailures: 1,
+      abandoned: 1,
+    });
+  });
+
+  it('counts a malformed probe decision, which still fails closed without an error', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    mockCallLlm.mockResolvedValue({ entries: toolCallEntries('probe', 'decide', '{"nope":1}'), usage: makeUsage() });
+    const persistedProbes: ProbeResponseV2[] = [];
+    const driver = startDriver('attr-malformed', makeDriverDeps({
+      persistProbeResponse: async (_chatId, probe) => { persistedProbes.push(probe); },
+    }));
+    driver.handleEvent('attr-malformed', buildExternalContext());
+
+    await advanceUntil(() => persistedProbes.length > 0);
+    expect(persistedProbes[0]!.isActivated).toBe(false);
+    expect(driver.wakeupCounters('attr-malformed')).toMatchObject({ probeMalformed: 1, abandoned: 0, primaryFailures: 0 });
+  });
+
+  it('rearms an abandoned wake-up from the watchdog once the stuck time has passed', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    let healthy = false;
+    mockCallLlm.mockImplementation(async config => {
+      if (!healthy) throw new Error('Chat Completions API 400: bad request');
+      return config.model === 'mock-probe' ? activate() : { entries: toolCallEntries('end', 'end_turn'), usage: makeUsage() };
+    });
+    const persistedTurns: TurnResponseV2[] = [];
+    const driver = createDriver({
+      chatIds: ['rearm'],
+      resolveChatConfig: () => makeChatConfig(),
+      watchdog: { enabled: true, intervalSec: 60, rearmAfterSec: 600, failureStreakThreshold: 3, summaryIntervalSec: 900 },
+    }, makeDriverDeps({ persistTurnResponse: async (_chatId, turn) => { persistedTurns.push(turn); } }));
+    activeDrivers.push(driver);
+    driver.start();
+    driver.start();
+    driver.handleEvent('rearm', buildExternalContext());
+
+    await advanceUntil(() => driver.wakeupCounters('rearm')?.abandoned === 1);
+    expect(persistedTurns).toHaveLength(0);
+    // Silent chat, provider recovers: nothing happens until the watchdog's rearm age.
+    healthy = true;
+    await vi.advanceTimersByTimeAsync(9 * 60_000);
+    expect(persistedTurns).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    await advanceUntil(() => persistedTurns.length > 0);
+    expect(persistedTurns).toHaveLength(1);
+    expect(driver.wakeupCounters('rearm')).toMatchObject({ abandoned: 1 });
+  });
+});

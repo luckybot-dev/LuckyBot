@@ -126,6 +126,7 @@ export const registerDriver = ({ get, register }: Registrar): void => {
       chatIds: get(TOKENS.CHAT_IDS),
       resolveChatConfig: id => resolveChatConfig(config, id),
       isMaintainer: get(TOKENS.IS_MAINTAINER),
+      watchdog: config.watchdog,
     }, {
       ...platform,
       loadTurnResponses: (chatId, afterMs) => loadTurnResponses(db, chatId, afterMs),

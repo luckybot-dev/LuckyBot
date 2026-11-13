@@ -95,6 +95,17 @@ plugins:
 # chat with chats.<id>.memory below.
 memoryDir: "./data/memory"
 
+# Out-of-loop watchdog: deterministic checks, never calls a model. Every
+# intervalSec it rearms a wake-up that was abandoned (permanent failure or
+# exhausted retries) at least rearmAfterSec ago -- once per failed context --
+# and logs compaction/memory failure streaks and wake-up failure counts.
+watchdog:
+  enabled: true
+  intervalSec: 60
+  rearmAfterSec: 600
+  failureStreakThreshold: 3
+  summaryIntervalSec: 900
+
 runtime:
   # Where the Bash tool executes. These defaults run shell commands in the bot
   # process itself and read/write files on its filesystem — no isolation — so

@@ -110,6 +110,7 @@ describe('createCompactionController', () => {
 
     await advance(0);
     expect(runCompaction).toHaveBeenCalledTimes(1);
+    expect(controller.consecutiveFailures()).toBe(1);
 
     // Inside the 5-minute latch a new context does not retry.
     rendered(context(2));
@@ -124,6 +125,7 @@ describe('createCompactionController', () => {
     rendered(context(3));
     await advance(COMPACTION_RETRY_BASE_MS);
     expect(runCompaction).toHaveBeenCalledTimes(2);
+    expect(controller.consecutiveFailures()).toBe(2);
     await advance(COMPACTION_RETRY_BASE_MS);
     expect(runCompaction).toHaveBeenCalledTimes(3);
 
@@ -131,6 +133,7 @@ describe('createCompactionController', () => {
     rendered(context(4));
     await advance(0);
     expect(runCompaction).toHaveBeenCalledTimes(4);
+    expect(controller.consecutiveFailures()).toBe(0);
     controller.dispose();
   });
 

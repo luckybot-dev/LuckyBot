@@ -278,6 +278,19 @@ const BackgroundTasksSchema = v.optional(v.object({
   retentionCount: v.optional(v.number(), 20),
 }), {});
 
+// Out-of-loop watchdog (src/driver/watchdog.ts). Deterministic checks only; it
+// never calls a model. `rearmAfterSec` is how long an abandoned wake-up must
+// have been stuck before it gets its single rearm.
+const WatchdogSchema = v.optional(v.object({
+  enabled: v.optional(v.boolean(), true),
+  intervalSec: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 60),
+  rearmAfterSec: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 600),
+  /** Consecutive compaction or memory failures that raise a warning. */
+  failureStreakThreshold: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 3),
+  /** Minimum gap between wake-up health summaries (logged only when something happened). */
+  summaryIntervalSec: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 900),
+}), {});
+
 const ConfigSchema = v.object({
   models: v.record(v.string(), v.object(llmEndpointEntries)),
   /**
@@ -349,6 +362,7 @@ const ConfigSchema = v.object({
    */
   memoryDir: v.optional(v.string(), './data/memory'),
   plugins: v.optional(v.record(v.string(), v.unknown()), {}),
+  watchdog: WatchdogSchema,
   runtime: RuntimeSchema,
   backgroundTasks: BackgroundTasksSchema,
   chats: v.objectWithRest({ default: ChatConfigSchema }, ChatOverrideSchema),
@@ -359,6 +373,7 @@ export type TelegramConfig = NonNullable<Config['telegram']>;
 export type FeishuConfig = NonNullable<Config['feishu']>;
 export type ChatConfig = v.InferOutput<typeof ChatConfigSchema>;
 
+export type WatchdogConfig = Config['watchdog'];
 export type RuntimeConfig = Config['runtime'];
 export type BackgroundTasksConfig = Config['backgroundTasks'];
 
