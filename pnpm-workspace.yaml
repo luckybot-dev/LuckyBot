@@ -1,4 +1,8 @@
-packages: []
+# plugins/ (the LuckyBot-Plugin submodule) is a workspace package so that its
+# own dependencies are installed with core; src/ still imports it by relative
+# path.
+packages:
+  - plugins
 onlyBuiltDependencies:
   - better-sqlite3
   - bufferutil
