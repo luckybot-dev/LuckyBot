@@ -287,6 +287,41 @@ Primary turns are bounded (15 s deadline, two tool rounds), so a slow tool must 
 - The task belongs to the chat that made the call and counts as one work-tool call under the turn budget. The plugin never touches the task manager; the host passes it a narrow closure only.
 - There is no `sleep` tool. Background completions wake the bot, so waiting is never needed.
 
+### Cron plugin
+
+The `cron` plugin (`plugins/src/cron/`) lets the bot schedule its own future wake-ups.
+
+**Who decides.** Only the bot, through its own tools. There is no HTTP route, chat command or maintainer override that creates, edits or forces a schedule; a deployment can only switch the plugin off per chat. A request in chat ("莱克明早8点提醒我…") is a suggestion: the bot weighs it, a message marked `maintainer="true"` somewhat more, and may decline. The prompt hint says exactly that (it never tells the bot to ignore people).
+
+**Tools** (contributed per chat, so each is bound to its chat; the plugin never sees chat context):
+
+| Tool | Meaning |
+|---|---|
+| `schedule_wakeup({ at? , cron?, note, reason? })` | Exactly one of `at` (`YYYY-MM-DD HH:MM`) or `cron` (5 fields). Local time, the same clock as chatlog timestamps. `note` (≤300 chars) is written by the bot and lands in the chat context, so it must be broadcast-safe. `reason` (≤200 chars) goes only to the audit file. Returns `{ id, kind, next_fire, note }`. |
+| `list_schedules()` | Active items of this chat with id, next fire time and note. |
+| `cancel_schedule({ id })` | Cancels one item of this chat. |
+
+Limit violations come back as `{ "error": "…" }` tool results, not exceptions.
+
+**Configuration** (`plugins.cron`, all optional; presence of the block loads the plugin, `chats.<id>.plugins.cron.enabled: true` enables it per chat):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `maxActivePerChat` | `20` | Active schedules per chat. |
+| `maxHorizonDays` | `60` | First fire must lie within this many days (and at least 1 minute ahead). |
+| `minRecurringIntervalMin` | `60` | A cron expression may not fire more often; checked by scanning its occurrences over a year. |
+| `lateGraceHours` | `6` | An overdue one-shot older than this is dropped (logged) instead of fired. |
+
+**Cron syntax.** Exactly five fields (minute hour day-of-month month day-of-week), parsed by [`croner`](https://github.com/Hexagon/croner) in `legacyMode` (Vixie-style OR between day-of-month and day-of-week when both are restricted; a bare `*` counts as unrestricted, `*/n` does not). Six-field (seconds) and `@daily`-style forms are rejected. Local `Date` arithmetic is used throughout: a wall-clock time that does not exist (DST gap) never matches, and a repeated hour fires once.
+
+**Storage.** `<storage.rootDir>/<chatId>.json` (`{ version: 1, items }`), one file per chat. The chat id is validated against `^[A-Za-z0-9_-]{1,64}$` before any path is built. Writes are atomic (tmp + rename). An unreadable or invalid file is logged at `error` and left untouched; that chat's tools fail until it is fixed. Items: `id`, `kind` (`once` | `cron`), `spec`, `note`, `reason`, `createdAtMs`, `nextFireAtMs`, `lastFiredAtMs`.
+
+**Firing.** One `setTimeout` (unref'd, at most 1 h ahead, re-armed) targets the earliest due item of an enabled chat. A fire is `chat.publish(chatId, { kind: 'cron', text, wake: true })`: a `<plugin-event plugin="cron">` line that wakes the chat and goes through probe like any runtime event, so the bot may still stay silent. The text says it is the bot's own scheduled wake-up, repeats the note and, when late, by how much. Chats where the plugin is disabled are skipped and their items kept. One-shots are deleted and recurring items advanced after publishing (a crash in between repeats a reminder rather than losing it). A failed publish keeps the item and retries after 60 s.
+
+**Startup catch-up.** Catch-up fires start 5 s after `setup` so core can finish seeding context. Overdue one-shots within `lateGraceHours` fire once with a "late" note; older ones are dropped with a warning. Recurring items whose occurrence is more than 2 minutes overdue skip every missed occurrence and move to the next future one (no burst).
+
+**Prompt hints.** The plugin contributes one `system` hint. Core renders plugin hints in the primary system prompt only; the probe prompt carries none, so the probe learns that a fire is the bot's own earlier decision from the event text itself.
+
 ---
 
 ## 7. Scenes & Context Overrides
