@@ -1,6 +1,7 @@
 import type { Logger } from '@guiiai/logg';
 
 import type { createBackgroundTaskManager } from '../background-task/manager';
+import type { PluginToolTasks } from '../background-task/plugin-tool';
 import type { BackgroundTasksConfig, Config, RuntimeConfig } from '../config/config';
 import type { DB } from '../db/client';
 import type { createDriver, DriverPlatform } from '../driver';
@@ -46,6 +47,7 @@ export const TOKENS = {
   EVENT_SINK: token<EventSink>('EventSink'),
   TELEGRAM_DRIVER_HOOKS: token<TelegramDriverHooks>('TelegramDriverHooks'),
   TELEGRAM_DRIVER_PLATFORM: token<DriverPlatform>('TelegramDriverPlatform'),
+  PLUGIN_TOOL_TASKS: token<PluginToolTasks>('PluginToolTasks'),
   BACKGROUND_TASK_MANAGER: token<ReturnType<typeof createBackgroundTaskManager>>('BackgroundTaskManager'),
   DRIVER: token<ReturnType<typeof createDriver>>('Driver'),
   TELEGRAM_LIVE_HANDLERS: token<TelegramLiveHandlers>('TelegramLiveHandlers'),
