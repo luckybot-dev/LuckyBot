@@ -1,4 +1,4 @@
-import type { ResolvedChatConfig } from '../config/config';
+import type { ResolvedChatConfig, WatchdogConfig } from '../config/config';
 import type { LlmEndpoint } from '../llm/types';
 import type { ConversationEntry } from '../unified-api/types';
 
@@ -34,6 +34,9 @@ export interface DriverConfig {
   // Absent means no maintainers: chats with tools.bash.requireMaintainer stay
   // gated closed.
   isMaintainer?: (userId: string) => boolean;
+  // Absent means no watchdog (tests, embedders); the container passes the
+  // validated `watchdog` config block.
+  watchdog?: WatchdogConfig;
 }
 
 export interface CompactionConfig {

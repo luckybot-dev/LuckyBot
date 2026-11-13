@@ -128,11 +128,13 @@ describe('memory controller triggers', () => {
 
 describe('memory controller failures', () => {
   it('latches provider errors with a doubling backoff and rechecks at expiry', async () => {
-    const { rc, deps } = make({ count: 40 });
+    const { rc, deps, controller } = make({ count: 40 });
     deps.consolidate.mockRejectedValue(new Error('HTTP 503'));
+    expect(controller.consecutiveFailures()).toBe(0);
     rc(context(1));
     await vi.advanceTimersByTimeAsync(0);
     expect(deps.consolidate).toHaveBeenCalledTimes(1);
+    expect(controller.consecutiveFailures()).toBe(1);
     expect(deps.recordError).toHaveBeenCalledWith('oc_chat', 'HTTP 503');
     expect(deps.advanceCursor).not.toHaveBeenCalled();
 
@@ -149,6 +151,7 @@ describe('memory controller failures', () => {
     expect(deps.consolidate).toHaveBeenCalledTimes(2);
     await advance(1_000);
     expect(deps.consolidate).toHaveBeenCalledTimes(3);
+    expect(controller.consecutiveFailures()).toBe(3);
   });
 
   it('treats a failing count query like any other failure instead of leaking a rejection', async () => {

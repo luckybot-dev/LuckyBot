@@ -12,6 +12,7 @@ import { createDecideTool, extractDecideResult, toToolSchema } from './tools';
 import type { CahciuaTool } from './tools';
 import { countParticipationCalls, countWorkToolCalls, DEFAULT_TURN_BUDGET, REACT_ONLY_TOOL_NAMES } from './turn-loop';
 import type { ProbeActivation, ProbeResponseV2, ResolvedChatConfig, TurnBudget, TurnBudgetUsage, TurnResponseV2 } from './types';
+import type { WakeupStage } from './wakeup-health';
 import type { ActiveTaskInfo } from '../background-task/types';
 import { callLlm } from '../llm/call';
 import type { MemorySnapshot } from '../memory/injection';
@@ -87,6 +88,11 @@ export const executeWakeup = async (params: {
   // already activated it, so judging again would only add latency.
   probeActivation?: ProbeActivation;
   onProbeActivated?: (activation: ProbeActivation) => void;
+  // Failure attribution: called with `probe` just before the probe request and
+  // `primary` once the probe gate is passed (or skipped for a continuation).
+  onStage?: (stage: WakeupStage) => void;
+  // Probe request finished with a decision; `malformed` means none was usable.
+  onProbeComplete?: (result: { elapsedMs: number; malformed: boolean }) => void;
   log: Logger;
 }): Promise<void> => {
   const budget = params.turnBudget ?? DEFAULT_TURN_BUDGET;
@@ -217,6 +223,7 @@ export const executeWakeup = async (params: {
 
     const decideTool = createDecideTool();
     const requestedAtMs = Date.now();
+    params.onStage?.('probe');
     const probeModel = params.chatConfig.probe.model;
     const probeTimeoutSec = params.chatConfig.probe.timeoutMs / 1000;
     const result = await callLlm(
@@ -238,6 +245,12 @@ export const executeWakeup = async (params: {
       },
     );
     const decision = extractDecideResult(result.entries);
+    params.onProbeComplete?.({ elapsedMs: Date.now() - requestedAtMs, malformed: decision == null });
+    if (decision == null)
+      // Fails closed to no_action below; named here so it is not mistaken for a
+      // deliberate silence.
+      params.log.withFields({ chatId: params.chatId, elapsedMs: Date.now() - requestedAtMs })
+        .warn('Probe returned no usable decision; failing closed to no_action');
     // Missing or malformed decisions fail closed. `react_only` still activates
     // primary, but with a restricted tool set so it cannot send a message.
     // A reaction is never an answer to a direct address, so under a reached
@@ -269,6 +282,7 @@ export const executeWakeup = async (params: {
     params.onProbeActivated?.({ reason: decision.reason, ...(reactOnly ? { reactOnly: true } : {}) });
   }
 
+  params.onStage?.('primary');
   // The primary deadline starts here, so a slow probe cannot eat into it.
   const deadlineAtMs = Date.now() + budget.deadlineMs;
   let typingInterval: ReturnType<typeof setInterval> | undefined;

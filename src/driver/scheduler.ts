@@ -3,6 +3,7 @@ import { computed, effect, signal } from 'alien-signals';
 
 import { latestExternalEventMs, triggerSenderLatestMs } from './context';
 import type { DebounceConfig, ProbeActivation } from './types';
+import type { WakeupFailureInfo, WakeupHealth } from './wakeup-health';
 import type { RenderedContext } from '../rendering/types';
 
 type Signal<T> = {
@@ -14,10 +15,14 @@ type Signal<T> = {
 // retrying on the same context; `failure` is anything else. A transient
 // failure after probe activated carries that activation so the retry goes
 // straight to primary.
+//
+// Failures may carry the activation too: probe advances the watermark, so a
+// failed primary leaves nothing "unprocessed" and the watchdog needs the
+// activation to know the context still owes an answer. `failure` is for logs.
 export type WakeupOutcome =
   | { kind: 'done' }
-  | { kind: 'failure' }
-  | { kind: 'transient-failure'; probeActivation?: ProbeActivation };
+  | { kind: 'failure'; probeActivation?: ProbeActivation; failure?: WakeupFailureInfo }
+  | { kind: 'transient-failure'; probeActivation?: ProbeActivation; failure?: WakeupFailureInfo };
 
 export interface WakeupRetry {
   probeActivation?: ProbeActivation;
@@ -38,6 +43,26 @@ interface PendingRetry {
   attempt: number;
   atMs: number;
   probeActivation?: ProbeActivation;
+  // The run chain started from a watchdog rearm; if it ends abandoned it is
+  // not rearmed again.
+  fromRearm?: boolean;
+}
+
+// The most recent abandoned wake-up, for the watchdog. `context` is what
+// `failedContext` was set to.
+interface AbandonedWakeup {
+  context: RenderedContext;
+  atMs: number;
+  probeActivation?: ProbeActivation;
+  // This failure ended a run that the watchdog had rearmed. Never rearmed again.
+  rearmed: boolean;
+}
+
+export interface SchedulerStatus {
+  // A wake-up is executing or a retry is scheduled; the watchdog never acts.
+  busy: boolean;
+  // Set while `failedContext` still holds the current context.
+  failure: { sinceMs: number; rearmed: boolean; rearmable: boolean } | null;
 }
 
 export const createReplyScheduler = (deps: {
@@ -53,6 +78,7 @@ export const createReplyScheduler = (deps: {
   execute: (contextAtStart: RenderedContext, retry?: WakeupRetry) => Promise<WakeupOutcome>;
   onDebounceStateChange: (chatId: string, isDebouncing: boolean) => void;
   retryDelaysMs?: readonly number[];
+  health?: WakeupHealth;
   log: Logger;
 }) => {
   const retryDelaysMs = deps.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
@@ -63,6 +89,9 @@ export const createReplyScheduler = (deps: {
   let windowStartMs: number | undefined;
   let debouncing = false;
   let loggedSuperseded: PendingRetry | undefined;
+  let abandoned: AbandonedWakeup | undefined;
+  // Context cleared by rearmFailed(); the run that picks it up is a rearm run.
+  let rearmedContext: RenderedContext | undefined;
 
   const setDebouncing = (value: boolean): void => {
     if (debouncing === value) return;
@@ -83,14 +112,34 @@ export const createReplyScheduler = (deps: {
     setDebouncing(false);
     const contextAtStart = deps.context();
     const retryAttempt = retry?.attempt ?? 0;
+    const fromRearm = retry ? retry.fromRearm === true : rearmedContext === contextAtStart;
+    rearmedContext = undefined;
     running(true);
     pendingRetry(null);
     const run = async (): Promise<void> => {
       try {
         const outcome = await deps.execute(contextAtStart, retry && { probeActivation: retry.probeActivation });
-        if (outcome.kind === 'done') return;
+        if (outcome.kind === 'done') {
+          abandoned = undefined;
+          return;
+        }
         const delayMs = retryDelaysMs[retryAttempt];
-        if (outcome.kind === 'transient-failure' && delayMs != null) {
+        const willRetry = outcome.kind === 'transient-failure' && delayMs != null;
+        const record = {
+          chatId: deps.chatId,
+          stage: outcome.failure?.stage ?? 'unknown',
+          transient: outcome.kind === 'transient-failure',
+          attempt: retryAttempt + 1,
+          elapsedMs: outcome.failure?.elapsedMs,
+          probeTimeout: outcome.failure?.probeTimeout ?? false,
+          // receivedAtMs of the newest external segment in the context being
+          // processed. Rendered segments carry no message id; this is the
+          // ordering key of the archived event.
+          latestExternalMs: latestExternalEventMs(contextAtStart, Number.NEGATIVE_INFINITY),
+          probeActivated: outcome.probeActivation != null,
+        };
+        deps.log.withFields({ ...record, willRetry }).warn('Wake-up failed');
+        if (willRetry) {
           deps.log.withFields({ chatId: deps.chatId, attempt: retryAttempt + 1, delayMs, probeActivated: outcome.probeActivation != null })
             .log('Retrying wake-up after transient failure');
           pendingRetry({
@@ -98,9 +147,18 @@ export const createReplyScheduler = (deps: {
             attempt: retryAttempt + 1,
             atMs: Date.now() + delayMs,
             probeActivation: outcome.probeActivation,
+            ...(fromRearm ? { fromRearm: true } : {}),
           });
         } else {
           deps.failedContext(contextAtStart);
+          abandoned = { context: contextAtStart, atMs: Date.now(), probeActivation: outcome.probeActivation, rearmed: fromRearm };
+          deps.health?.recordAbandoned();
+          // Distinct from a probe `no_action`: this is the line that says a
+          // wake-up was missed.
+          if (fromRearm)
+            deps.log.withFields({ ...record, reason: 'failed-after-watchdog-rearm' }).error('Wake-up abandoned again after watchdog rearm');
+          else
+            deps.log.withFields({ ...record, reason: outcome.kind === 'transient-failure' ? 'retries-exhausted' : 'permanent-failure' }).warn('Wake-up abandoned');
         }
       } finally {
         running(false);
@@ -160,7 +218,50 @@ export const createReplyScheduler = (deps: {
     timer = setTimeout(() => fire(), Math.max(0, fireAtMs - currentTime));
   });
 
+  // Why a failed context may still owe an answer: unprocessed external input,
+  // a persisted open continuation, or a probe that already activated primary.
+  const owesAnswer = (context: RenderedContext, failure: AbandonedWakeup): boolean =>
+    failure.probeActivation != null
+    || deps.lastTurnInterrupted()
+    || latestExternalEventMs(context, deps.lastProcessedMs()) != null;
+
   return {
+    // Read-only snapshot for the watchdog.
+    status(): SchedulerStatus {
+      const failed = deps.failedContext();
+      const failure = failed != null && abandoned?.context === failed && deps.context() === failed ? abandoned : null;
+      return {
+        busy: running() || pendingRetry() != null,
+        failure: failure && {
+          sinceMs: failure.atMs,
+          rearmed: failure.rearmed,
+          rearmable: owesAnswer(failed!, failure),
+        },
+      };
+    },
+    // Lets the abandoned context run once more with a fresh retry count.
+    // Returns false (and changes nothing) unless the scheduler is idle, the
+    // failure is still current and unrearmed, and the context still owes an
+    // answer. A carried probe activation is reused, since the watermark has
+    // already moved past the input it judged.
+    rearmFailed(): boolean {
+      const failed = deps.failedContext();
+      if (running() || pendingRetry() != null || failed == null || deps.context() !== failed) return false;
+      if (abandoned?.context !== failed || abandoned.rearmed || !owesAnswer(failed, abandoned)) return false;
+      const { probeActivation } = abandoned;
+      abandoned = { ...abandoned, rearmed: true };
+      rearmedContext = failed;
+      if (probeActivation)
+        pendingRetry({
+          latestExternalMs: latestExternalEventMs(failed, Number.NEGATIVE_INFINITY) ?? Number.NEGATIVE_INFINITY,
+          attempt: 0,
+          atMs: Date.now(),
+          probeActivation,
+          fromRearm: true,
+        });
+      deps.failedContext(null);
+      return true;
+    },
     notifyTyping(): void {
       lastTypingMs(Date.now());
     },

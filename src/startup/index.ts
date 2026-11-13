@@ -111,6 +111,7 @@ export const startApp = async (): Promise<void> => {
     platformStartAttempted = true;
     await platform.start();
     driverInput.activate();
+    driver.start();
     backgroundTasks.recoverTasks();
     await pluginHost.start();
 
