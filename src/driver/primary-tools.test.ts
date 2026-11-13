@@ -118,7 +118,6 @@ describe('createPrimaryTools', () => {
       'kill_task',
       'read_task_output',
       'read_old_messages',
-      'sleep',
       'end_turn',
     ]);
 
@@ -143,7 +142,6 @@ describe('createPrimaryTools', () => {
       'kill_task',
       'read_task_output',
       'read_old_messages',
-      'sleep',
       'end_turn',
     ]);
 
@@ -327,7 +325,6 @@ describe('createPrimaryTools', () => {
       'kill_task',
       'read_task_output',
       'read_old_messages',
-      'sleep',
       'end_turn',
     ]);
     const sendMessage = findTool(tools, 'send_message');

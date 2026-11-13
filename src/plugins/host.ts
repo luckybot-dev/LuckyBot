@@ -14,12 +14,15 @@ import {
   type PluginDefinition,
   type PluginLogger,
   type PluginTool,
+  type PluginToolResult,
   type PromptHint,
 } from '../../plugins/src/sdk';
+import type { PluginToolTasks } from '../background-task/plugin-tool';
 import { mergeChatConfig, resolveChatConfig, resolveModel, type Config } from '../config/config';
 import { computeParticipationStats } from '../driver/participation-stats';
 import type { ActiveScene } from '../driver/scenes';
 import { createTool, type CahciuaTool } from '../driver/tools';
+import type { ToolResult } from '../driver/tools/types';
 import { localTimeNow } from '../driver/wakeup';
 import type { EventSink } from '../event-sink';
 import { callLlm, type LlmCallConfig } from '../llm/call';
@@ -41,7 +44,6 @@ export const BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set([
   'download_file',
   'read_image',
   'read_old_messages',
-  'sleep',
   'ban_spammer',
 ]);
 
@@ -67,6 +69,18 @@ export interface PluginHostDeps {
     getRenderParams?: (chatId: string) => RenderParams;
   };
   memoryBackend?: MemoryBackend;
+  // Narrow handle for tools that declare `background`: the plugin host never
+  // sees the task manager, only this closure scoped to plugin-tool tasks.
+  backgroundTask?: {
+    tasks: PluginToolTasks;
+    startTask: (
+      typeName: string,
+      sessionId: string,
+      params: unknown,
+      intention: string | undefined,
+      timeoutMs: number,
+    ) => number;
+  };
   callModelOverride?: (
     modelName: string,
     prompt: string | { system?: string; user: string },
@@ -658,6 +672,82 @@ export const createPluginHost = (deps: PluginHostDeps): PluginHost => {
     return hints;
   };
 
+  const describeCall = (toolName: string, input: unknown): string => {
+    const text = `${toolName} ${JSON.stringify(input) ?? ''}`.trim();
+    return text.length > 120 ? `${text.slice(0, 120)}...` : text;
+  };
+
+  // Race the call against `afterMs`. A call that settles in time returns (or
+  // throws) exactly like an ordinary tool; a slow one keeps running as a
+  // background task whose completion event wakes the chat. The model gets no
+  // follow-up here: "checking" plus end_turn is a valid answer, because the
+  // result arrives later without the turn waiting for it.
+  const executeBackgroundable = async (
+    chatId: string,
+    pluginId: string,
+    tool: PluginTool,
+    background: NonNullable<PluginTool['background']>,
+    input: unknown,
+  ): Promise<ToolResult> => {
+    const controller = new AbortController();
+    const promise = (async () => await tool.execute(input, controller.signal))();
+
+    type Settled = { ok: true; res: PluginToolResult } | { ok: false; error: unknown };
+    const settled: Promise<Settled> = promise.then(
+      res => ({ ok: true, res }),
+      (error: unknown) => ({ ok: false, error }),
+    );
+
+    let timer: NodeJS.Timeout | undefined;
+    const slow = new Promise<'slow'>(resolveSlow => {
+      timer = setTimeout(() => resolveSlow('slow'), background.afterMs);
+      timer.unref?.();
+    });
+
+    let first: Settled | 'slow';
+    try {
+      first = await Promise.race([settled, slow]);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (first !== 'slow') {
+      if (!first.ok) throw first.error;
+      return {
+        content: first.res.content,
+        requiresFollowUp: first.res.requiresFollowUp ?? false,
+      };
+    }
+
+    if (!deps.backgroundTask) {
+      // No task manager (host used standalone): behave like a plain tool.
+      const last = await settled;
+      if (!last.ok) throw last.error;
+      return { content: last.res.content, requiresFollowUp: last.res.requiresFollowUp ?? false };
+    }
+
+    const taskId = deps.backgroundTask.tasks.spawn(deps.backgroundTask.startTask, chatId, {
+      pluginId,
+      toolName: tool.name,
+      intention: describeCall(tool.name, input),
+      timeoutMs: background.timeoutMs,
+      promise: settled.then(outcome => {
+        if (!outcome.ok) throw outcome.error;
+        return outcome.res.content;
+      }),
+      abort: reason => controller.abort(new Error(reason)),
+    });
+    hostLogger.withFields({ chatId, pluginId, tool: tool.name, taskId }).debug('Plugin tool moved to background');
+
+    return {
+      content: JSON.stringify({
+        background_task_id: taskId,
+        message: `\`${tool.name}\` is taking longer than ${Math.round(background.afterMs / 1000)}s and continues in the background (task ${taskId}). Its result will arrive as a runtime event and wake you; you do not need to wait. You may tell the chat you are checking, then end your turn.`,
+      }),
+      requiresFollowUp: false,
+    };
+  };
+
   const getTools = (chatId: string): CahciuaTool[] => {
     const tools: CahciuaTool[] = [];
     for (const [pluginId, plugin] of activePlugins) {
@@ -679,13 +769,15 @@ export const createPluginHost = (deps: PluginHostDeps): PluginHost => {
             name: t.name,
             description: t.description,
             parameters: t.parameters,
-            execute: async input => {
-              const res = await t.execute(input);
-              return {
-                content: res.content,
-                requiresFollowUp: res.requiresFollowUp ?? false,
-              };
-            },
+            execute: t.background
+              ? input => executeBackgroundable(chatId, pluginId, t, t.background!, input)
+              : async input => {
+                const res = await t.execute(input);
+                return {
+                  content: res.content,
+                  requiresFollowUp: res.requiresFollowUp ?? false,
+                };
+              },
           }));
         }
       }

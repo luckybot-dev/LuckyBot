@@ -266,6 +266,27 @@ Declared in `plugin.contributes`:
 | `memoryBackend` | Declared | Custom memory storage backend (e.g. Mem0). |
 | `mediaResolvers` | Declared | Media frame/transcription resolvers (e.g. speech-to-text). |
 
+### Background tools
+
+Primary turns are bounded (15 s deadline, two tool rounds), so a slow tool must not hold the turn. A `PluginTool` can opt in with an additive `background` field (no `sdkVersion` bump):
+
+```ts
+{
+  name: 'web_fetch',
+  // ...
+  background: { afterMs: 4000, timeoutMs: 60_000 },
+  execute: async (input, signal) => { /* signal is optional to honour */ },
+}
+```
+
+- If `execute` settles within `afterMs`, the result is returned inline, exactly like a tool without the field. A throw is reported as an ordinary tool error.
+- Otherwise the host moves the still-running call into a `plugin_tool` background task bounded by `timeoutMs` and returns `{ "background_task_id": N, "message": "..." }` to the model with `requiresFollowUp: false`. The model may say it is checking and end the turn; the turn does not wait.
+- When the call settles, the task completes and a `<runtime-event type="task-completed" task-type="plugin_tool">` wakes the chat. Its summary is the tool's result content itself (cut at 4000 characters with a truncation note; the full text stays available to `read_task_output`). A rejection becomes a `Tool ... failed: <message>` summary instead of an exception.
+- On `timeoutMs` (or `kill_task`), the task completes with a timeout/cancel summary, the plugin's `AbortSignal` (second `execute` argument, passed only for tools that declare `background`) is aborted, and the promise is abandoned. Ignoring the signal is allowed; a late result is discarded.
+- A restart cannot resume an in-flight promise: the recovered task completes at once with "interrupted: runtime restarted".
+- The task belongs to the chat that made the call and counts as one work-tool call under the turn budget. The plugin never touches the task manager; the host passes it a narrow closure only.
+- There is no `sleep` tool. Background completions wake the bot, so waiting is never needed.
+
 ---
 
 ## 7. Scenes & Context Overrides
@@ -294,6 +315,8 @@ While a scene is active for a chat:
 ## 8. Web Plugin & Configuration Migration
 
 Web search (`web_search`) and web fetch (`web_fetch`) are provided by the `web` plugin (`plugins/src/web/`).
+
+Both tools declare `background: { afterMs: 4000, timeoutMs: 60000 }` (see Background tools). Override globally with `plugins.web.background: { afterMs, timeoutMs }`.
 
 ### Migration from Legacy Core Web Config
 

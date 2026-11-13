@@ -15,7 +15,6 @@ import {
   createReadOldMessagesTool,
   createReadTaskOutputTool,
   createSendMessageTool,
-  createSleepTool,
 } from './tools';
 import type { CahciuaTool } from './tools';
 import type { ResolvedChatConfig, RuntimeConfig } from '../config/config';
@@ -191,7 +190,6 @@ export const createPrimaryTools = (deps: PrimaryToolsDependencies): CahciuaTool[
     createReadTaskOutputTool((taskId, offset, limit) =>
       deps.backgroundTask.readTaskOutput(taskId, offset, limit)),
     createReadOldMessagesTool(messageIds => deps.readOldMessages(deps.chatId, messageIds.map(resolveMessageId))),
-    createSleepTool(),
     createEndTurnTool(),
   );
 

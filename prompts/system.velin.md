@@ -67,7 +67,6 @@ const messageLinkPrefix = computed(() =>
 //     '`read_image` — Read and analyze an image from a chat attachment (by file-id) or the filesystem (by path). Set detail to "high" for fine details or text.',
 //     '`kill_task` — Kill a running background task by its ID.',
 //     '`read_task_output` — Read the full output of a completed background task. Supports line-based pagination (offset, limit).',
-//     '`sleep` — Wait for a bounded number of seconds before continuing.',
 //     '`end_turn` — End your turn. On its own it means staying silent; after `react` it completes a reaction-only turn.',
 //   ]
 //   return 'Your available tools are:' + NL + NL + lines.map(l => '- ' + l).join(NL)

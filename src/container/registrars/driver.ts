@@ -1,4 +1,5 @@
 import { createBackgroundTaskManager } from '../../background-task/manager';
+import { createPluginToolTasks } from '../../background-task/plugin-tool';
 import { shellTaskFactory } from '../../background-task/shell';
 import { resolveChatConfig, resolveModel } from '../../config/config';
 import {
@@ -64,6 +65,8 @@ export const registerDriver = ({ get, register }: Registrar): void => {
     });
   });
 
+  register(TOKENS.PLUGIN_TOOL_TASKS, createPluginToolTasks);
+
   register(TOKENS.BACKGROUND_TASK_MANAGER, () => {
     const db = get(TOKENS.DB);
     const pipeline = get(TOKENS.PIPELINE);
@@ -79,6 +82,7 @@ export const registerDriver = ({ get, register }: Registrar): void => {
       logger: get(TOKENS.LOGGER),
     });
     manager.registerFactory(shellTaskFactory);
+    manager.registerFactory(get(TOKENS.PLUGIN_TOOL_TASKS).factory);
     return manager;
   });
 
