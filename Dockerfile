@@ -47,6 +47,10 @@ WORKDIR /app
 # are `import type`). The manifest set, patches/ and scripts/ must be present
 # before install so pnpm can apply patches and run the postinstall.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+# plugins/ is a workspace package: its manifest must be present for the
+# frozen install, which hoists the plugins' own dependencies (node-linker is
+# hoisted) into /app/node_modules next to core's.
+COPY plugins/package.json ./plugins/package.json
 COPY patches ./patches
 COPY scripts ./scripts
 RUN pnpm install --frozen-lockfile --prod
