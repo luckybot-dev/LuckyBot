@@ -23,12 +23,14 @@
     "import-contacts": "tsx scripts/import-contacts.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "redact:audit": "tsx scripts/redact-audit.ts"
   },
   "dependencies": {
     "@cfworker/json-schema": "^4.1.1",
     "@guiiai/logg": "^1.2.11",
     "@larksuiteoapi/node-sdk": "1.76.0",
+    "@scure/bip39": "^2.4.0",
     "@velin-dev/core-vue": "^1.0.0-beta.6",
     "alien-signals": "^3.1.2",
     "better-sqlite3": "^11.7.0",

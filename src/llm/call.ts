@@ -3,6 +3,7 @@ import type { Logger } from '@guiiai/logg';
 import { chatCompletions } from './chat';
 import { trimImages } from './images';
 import { applyAnthropicCachePoints, messagesApi } from './messages';
+import { redactRequest } from './redaction';
 import { dumpLlmPayload } from './request-dump';
 import { responsesApi } from './responses';
 import type { LlmEndpoint } from './types';
@@ -80,7 +81,7 @@ const optionalTools = <T>(mapped: T[] | undefined): T[] | undefined =>
 export const callLlm = async (
   config: LlmCallConfig,
   entries: ConversationEntry[],
-  system: string,
+  rawSystem: string,
   tools: ToolSchema[] | undefined,
   options: LlmCallOptions,
 ): Promise<LlmCallResult> => {
@@ -92,6 +93,13 @@ export const callLlm = async (
   let prepared = entries;
   if (options.maxImagesAllowed != null)
     prepared = trimImages(prepared, options.maxImagesAllowed);
+
+  // Secrets are stripped here, after the last IR rewrite and before any wire
+  // conversion, so the provider request and the /tmp/cahciua dump (fed from the
+  // wire body) both carry the redacted text. Persisted data never passes through.
+  const redacted = redactRequest(prepared, rawSystem, log, label);
+  prepared = redacted.entries;
+  const system = redacted.system;
 
   if (apiFormat === 'responses') {
     const input = await toResponsesInput(prepared);

@@ -98,6 +98,19 @@ plugins:
     maxHorizonDays: 60          # first fire must be within this many days
     minRecurringIntervalMin: 60 # cron expressions may not fire more often
     lateGraceHours: 6           # overdue one-shots older than this are dropped on startup
+  # Strips secrets (API keys, tokens, private keys, URL/connection-string
+  # passwords, secret assignments, seed phrases, bank cards, CN resident IDs)
+  # from every text sent to a model (docs/plugins.md "Redact plugin"). Global,
+  # not per chat. Persisted events and turn responses keep the original.
+  #   off     (default) nothing happens; requests are byte-identical.
+  #   shadow  requests are untouched; per request the counts by kind plus
+  #           kind/length/8-char hash of each hit are logged at debug level.
+  #           Run `pnpm redact:audit -- --db data/luckybot.db` first to spot
+  #           false positives in the archive.
+  #   enforce matches are replaced by [redacted:<kind>] before the request leaves.
+  # `enabled` is not accepted here; `mode` replaces it.
+  redact:
+    mode: "off" # off | shadow | enforce
 
 # Person memory (docs/memory-design.md): Markdown cards per member under
 # <memoryDir>/<chatId>/. Must sit under the writable data volume; enable it per

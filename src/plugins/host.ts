@@ -16,6 +16,7 @@ import {
   type PluginTool,
   type PluginToolResult,
   type PromptHint,
+  type RedactionHit,
 } from '../../plugins/src/sdk';
 import type { PluginToolTasks } from '../background-task/plugin-tool';
 import { mergeChatConfig, resolveChatConfig, resolveModel, type Config } from '../config/config';
@@ -26,6 +27,7 @@ import type { ToolResult } from '../driver/tools/types';
 import { localTimeNow } from '../driver/wakeup';
 import type { EventSink } from '../event-sink';
 import { callLlm, type LlmCallConfig } from '../llm/call';
+import { getLlmRedactor, installLlmRedactor, type LlmRedactor } from '../llm/redaction';
 import { renderEntries } from '../memory/injection';
 import type { MemoryBackend } from '../memory/types';
 import type { IntermediateContext } from '../projection';
@@ -102,6 +104,12 @@ export const createPluginHost = (deps: PluginHostDeps): PluginHost => {
   const httpServer = createPluginHttpServer(deps.logger.withContext('plugin-http'));
   const activePlugins = new Map<string, PluginDefinition<unknown>>();
   const activePromptHints = new Map<string, (chatId: string) => PromptHint[] | undefined>();
+  // Plugins that contribute `redactText` act on every model request, not per
+  // chat, so their prompt hints are rendered for every chat too.
+  const globalHintPlugins = new Set<string>();
+  const redactTexts: Array<(text: string) => string> = [];
+  const inspectTexts: Array<(text: string) => RedactionHit[]> = [];
+  let installedRedactor: LlmRedactor | undefined;
 
   interface ActiveSceneState {
     pluginId: string;
@@ -608,6 +616,12 @@ export const createPluginHost = (deps: PluginHostDeps): PluginHost => {
         activePromptHints.set(plugin.id, plugin.contributes.promptHints);
       }
 
+      if (plugin.contributes?.redactText) {
+        redactTexts.push(plugin.contributes.redactText);
+        globalHintPlugins.add(plugin.id);
+        if (plugin.contributes.inspectText) inspectTexts.push(plugin.contributes.inspectText);
+      }
+
       await (plugin.setup as (ctx: PluginContext<unknown>) => Promise<void> | void)(ctx);
       activePlugins.set(plugin.id, plugin);
       hostLogger.withFields({ pluginId: plugin.id }).log('Plugin started');
@@ -618,6 +632,16 @@ export const createPluginHost = (deps: PluginHostDeps): PluginHost => {
       const host = serverConf.host ?? '0.0.0.0';
       const port = serverConf.port ?? 8787;
       await httpServer.start(host, port);
+    }
+
+    if (redactTexts.length > 0) {
+      const fns = [...redactTexts];
+      const inspectors = [...inspectTexts];
+      installedRedactor = {
+        redact: text => fns.reduce((acc, fn) => fn(acc), text),
+        inspect: text => inspectors.flatMap(fn => fn(text)),
+      };
+      installLlmRedactor(installedRedactor);
     }
 
     running = true;
@@ -637,6 +661,11 @@ export const createPluginHost = (deps: PluginHostDeps): PluginHost => {
     }
     activePlugins.clear();
     activePromptHints.clear();
+    globalHintPlugins.clear();
+    redactTexts.length = 0;
+    inspectTexts.length = 0;
+    if (installedRedactor && getLlmRedactor() === installedRedactor) installLlmRedactor(undefined);
+    installedRedactor = undefined;
 
     for (const scenes of activeScenes.values()) {
       for (const sceneState of scenes.values()) {
@@ -661,7 +690,7 @@ export const createPluginHost = (deps: PluginHostDeps): PluginHost => {
   const getSystemPromptHints = (chatId: string): string[] => {
     const hints: string[] = [];
     for (const [pluginId, hintFn] of activePromptHints) {
-      if (!isPluginEnabledForChat(chatId, pluginId)) continue;
+      if (!globalHintPlugins.has(pluginId) && !isPluginEnabledForChat(chatId, pluginId)) continue;
       const contributed = hintFn(chatId);
       if (contributed) {
         for (const h of contributed) {
