@@ -89,6 +89,15 @@ plugins:
       decide: "always"    # 'ask' | 'always' (default 'always')
       timeoutMs: 8000     # 1000..14000 (default 8000)
       onTimeout: "accept" # 'accept' | 'decline' (default 'accept')
+  # The bot schedules its own future wake-ups (docs/plugins.md "Cron plugin").
+  # Only the bot creates or cancels schedules, through its tools; there is no
+  # chat command or route. Presence of this block loads the plugin; enable it
+  # per chat below. All keys optional (defaults shown).
+  cron:
+    maxActivePerChat: 20
+    maxHorizonDays: 60          # first fire must be within this many days
+    minRecurringIntervalMin: 60 # cron expressions may not fire more often
+    lateGraceHours: 6           # overdue one-shots older than this are dropped on startup
 
 # Person memory (docs/memory-design.md): Markdown cards per member under
 # <memoryDir>/<chatId>/. Must sit under the writable data volume; enable it per
@@ -241,6 +250,8 @@ chats:
       tavern:
         enabled: false
       web:
+        enabled: false
+      cron:
         enabled: false
     scenes:
       tavern.table:

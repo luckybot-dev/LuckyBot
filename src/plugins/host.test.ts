@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,7 @@ import * as v from 'valibot';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createPluginHost } from './host';
+import { createCronPlugin } from '../../plugins/src/cron';
 import { CURRENT_SDK_VERSION, definePlugin, type PluginCapabilities, type PluginDefinition } from '../../plugins/src/sdk';
 import type { Config } from '../config/config';
 import type { EventSink } from '../event-sink';
@@ -354,6 +355,77 @@ describe('Core Plugin Host', () => {
       expect(disabledHints).toEqual([]);
 
       await host.stop();
+    });
+  });
+
+  describe('Cron plugin', () => {
+    const overdueFile = (id: string) => JSON.stringify({
+      version: 1,
+      items: [{
+        id,
+        kind: 'once',
+        spec: '2026-11-13 09:00',
+        note: 'check the oven',
+        createdAtMs: Date.now() - 7_200_000,
+        nextFireAtMs: Date.now() - 600_000,
+      }],
+    });
+
+    const makeCronConfig = () => {
+      const config = makeMockConfig({ cron: {} });
+      config.chats[CHAT_ENABLED]!.plugins = { cron: { enabled: true } } as never;
+      config.chats[CHAT_DISABLED]!.plugins = { cron: { enabled: false } } as never;
+      return config;
+    };
+
+    it('renders its hint and tools only for chats where it is enabled', async () => {
+      const { eventSink, logger } = createMockDeps();
+      const host = createPluginHost({
+        config: makeCronConfig(),
+        eventSink,
+        logger,
+        plugins: [createCronPlugin()],
+        dataDir: tmpDataDir,
+      });
+      await host.start();
+
+      const hints = host.getSystemPromptHints(CHAT_ENABLED);
+      expect(hints).toHaveLength(1);
+      expect(hints[0]).toContain('right to decline');
+      expect(host.getSystemPromptHints(CHAT_DISABLED)).toEqual([]);
+
+      expect(host.getTools(CHAT_ENABLED).map(t => t.name)).toEqual(['schedule_wakeup', 'list_schedules', 'cancel_schedule']);
+      expect(host.getTools(CHAT_DISABLED)).toEqual([]);
+      await host.stop();
+    });
+
+    it('wakes only the enabled chat when an overdue schedule is caught up at startup', async () => {
+      vi.useFakeTimers();
+      try {
+        const root = join(tmpDataDir, 'plugins', 'cron');
+        mkdirSync(root, { recursive: true });
+        writeFileSync(join(root, `${CHAT_ENABLED}.json`), overdueFile('on1'));
+        writeFileSync(join(root, `${CHAT_DISABLED}.json`), overdueFile('off1'));
+
+        const { eventSink, accepted, logger } = createMockDeps();
+        const host = createPluginHost({
+          config: makeCronConfig(),
+          eventSink,
+          logger,
+          plugins: [createCronPlugin()],
+          dataDir: tmpDataDir,
+        });
+        await host.start();
+        await vi.advanceTimersByTimeAsync(10_000);
+
+        expect(accepted).toHaveLength(1);
+        expect(accepted[0]!.options).toEqual({ notifyDriver: true });
+        expect(accepted[0]!.event).toMatchObject({ kind: 'plugin_event', chatId: CHAT_ENABLED, plugin: 'cron' });
+        expect((accepted[0]!.event as { text: string }).text).toContain('check the oven');
+        await host.stop();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
