@@ -263,6 +263,8 @@ Declared in `plugin.contributes`:
 | `promptHints` | Implemented | `(chatId: string) => PromptHint[]` contributing system prompt instructions for chats where the plugin is enabled. |
 | `tools` | Implemented | `PluginTool[] \| ((chatId: string, chatConfig?: unknown) => PluginTool[])` contributing primary LLM tools callable during the Driver's turn loop for enabled chats. |
 | `scenes` | Implemented | `PluginSceneDefinition[]` contributing contextual scene definitions (`id`, `hint`, `idleTimeoutMs`) activated via `scene.enter`/`exit`. |
+| `redactText` | Implemented | `(text: string) => string`, pure, synchronous, deterministic. Strips secrets from every text part core sends to a model. Global, not per chat; composed in registration order across active plugins. Additive, no `sdkVersion` bump. |
+| `inspectText` | Implemented | `(text: string) => RedactionHit[]` (`{ kind, length, hash }`). Shadow companion of `redactText`: reports what would be removed without changing anything and never returns the matched text. |
 | `memoryBackend` | Declared | Custom memory storage backend (e.g. Mem0). |
 | `mediaResolvers` | Declared | Media frame/transcription resolvers (e.g. speech-to-text). |
 
@@ -321,6 +323,26 @@ Limit violations come back as `{ "error": "…" }` tool results, not exceptions.
 **Startup catch-up.** Catch-up fires start 5 s after `setup` so core can finish seeding context. Overdue one-shots within `lateGraceHours` fire once with a "late" note; older ones are dropped with a warning. Recurring items whose occurrence is more than 2 minutes overdue skip every missed occurrence and move to the next future one (no burst).
 
 **Prompt hints.** The plugin contributes one `system` hint. Core renders plugin hints in the primary system prompt only; the probe prompt carries none, so the probe learns that a fire is the bot's own earlier decision from the event text itself.
+
+### Redact plugin
+
+The `redact` plugin (`plugins/src/redact/`) keeps credentials out of model-bound traffic. Presence of `plugins.redact` loads it; the switch is `mode`, and there is no per-chat setting.
+
+| `mode` | Behaviour |
+|---|---|
+| `off` (default) | Nothing is removed or logged; requests are byte-identical to a build without the plugin, and no prompt hint is rendered. |
+| `shadow` | Requests are untouched. Per request, `callLlm` logs at `debug` the counts by kind and, for each hit (first 100), its kind, length and an 8-hex SHA-256 prefix. The matched text is never logged. |
+| `enforce` | Matches are replaced by `[redacted:<kind>]`, irreversibly, with no placeholder map. A system prompt hint tells the model the marker means a removed secret that cannot be recovered and that people should not be asked to re-post it. |
+
+`plugins.redact` is a strict object: the former `enabled` key (and any other key) fails startup validation instead of being ignored. `enabled: false` still skips the plugin like every plugin.
+
+**Where it applies.** `src/llm/call.ts` is the one place all model calls share (primary, probe, compaction, memory consolidation, media alt text, plugin `callModel`/`ask`). Before wire conversion it applies the composed `redactText` to the system prompt, user/system/assistant text, text groups, tool-call arguments (the string leaves and keys of the JSON, so arguments stay valid JSON) and tool results; the `/tmp/cahciua/` request dump is built from the converted request, so it is redacted too. Not touched: images, reasoning blocks (Anthropic signatures, OpenAI encrypted content), tool schemas and descriptions, and everything persisted — events, turn responses and the database keep the original. The host installs the composed function into a process-wide slot (`installLlmRedactor` in `src/llm/redaction.ts`) on `start()` and clears it on `stop()`; nothing else writes it. With the slot empty or the function a no-op, `callLlm` passes the same objects through.
+
+**Rules.** Ported from [magpie](https://github.com/yetone/magpie) (`internal/redact/`, MIT, copyright yetone; see `plugins/NOTICE`) into linear-time JS regexes plus two scanners (PEM blocks, BIP39 runs), with magpie's test cases: vendor keys and tokens (OpenAI, Anthropic, GitHub, GitLab, Slack, AWS, Google, Stripe, Telegram bot, npm, Hugging Face, JWT) → `api-key`/`token`; PEM/SSH private-key blocks and marked raw wallet keys → `private-key`; URL and connection-string passwords and password assignments → `password` (scheme and host kept); other secret assignments and `Authorization`-style header values → `secret` (key kept, value replaced); BIP39 seed phrases → `seed-phrase`; Luhn-valid 13–19 digit cards → `bank-card`; checksum-valid 18-character resident IDs → `cn-id`. There is no generic high-entropy rule.
+
+**Protected spans.** Before the rules run, spans that must never change are marked, and any match overlapping one is dropped: Feishu `ou_`/`on_`/`oc_`/`om_` ids, `file_v…`/`img_v…` keys, rendered message aliases (`m` + 9 base36), UUIDs, 40-hex git SHAs, and every attribute value inside the rendered chatlog tags (`<message>`, `<mention>`, `<in-reply-to>`, attachments, events, …). Consequence: a UUID or 40-hex value assigned to a secret-named key is left alone.
+
+**Audit before enforcing.** `pnpm redact:audit -- --db <path> [--limit N]` opens the SQLite database read-only (`readonly`, `query_only`), runs the rules over `events.text` and prints counts by kind plus, per hit, the event id, kind, length and a masked preview (first and last 2 characters, the rest `*`). `--limit N` scans the newest N events. It never writes.
 
 ---
 
