@@ -323,6 +323,43 @@ describe('participation tuning wording', () => {
   });
 });
 
+// #25: a quote keeps only a preview and a summary keeps only refs, so primary has
+// to be told that the ids it sees are fetchable. The rule must stay out of the
+// probe, which has no tools, and must warn about the turn budget.
+describe('recall wording (#25)', () => {
+  it('tells primary to fetch truncated quotes and summary refs, and to skip it otherwise', async () => {
+    const primary = await renderTemplate('system.velin.md', { mode: 'primary', ...SYSTEM_PROPS });
+    expect(primary).toContain('Reading a message in full');
+    expect(primary).toContain('`read_old_messages`');
+    expect(primary).toContain('(ref: msg#ID)');
+    expect(primary).toContain('up to 10 per call');
+    expect(primary).toContain('Skip it when the preview already says enough');
+    expect(primary).toContain('turn budget');
+    // The preview length quoted in the prompt matches REPLY_PREVIEW_MAX_CHARS.
+    expect(primary).toContain('100 characters');
+  });
+
+  it('keeps tool talk out of the probe', async () => {
+    const probe = await renderTemplate('system.velin.md', { mode: 'probe', ...SYSTEM_PROPS });
+    expect(probe).not.toContain('Reading a message in full');
+    expect(probe).not.toContain('read_old_messages');
+  });
+});
+
+// #28: a live session claimed what was installed on its own machine and was
+// contradicted by a member. Self-environment facts need observation evidence.
+describe('self-environment wording (#28)', () => {
+  it('forbids unobserved claims about its own machine without contradicting backend secrecy', async () => {
+    const primary = await renderTemplate('system.velin.md', { mode: 'primary', ...SYSTEM_PROPS });
+    expect(primary).toContain('**Your own machine:**');
+    expect(primary).toContain('You have no reliable knowledge of your runtime');
+    expect(primary).toContain('never state it as fact');
+    // Admitting ignorance stays compatible with refusing to leak backend detail.
+    expect(primary).toContain('not a backend disclosure');
+    expect(primary).toContain('anything about your own backend');
+  });
+});
+
 // Maintainer status and late-delivered messages change what the model sees, so
 // their rules are asserted as structure and ordering like the participation set.
 describe('maintainer and late-delivery wording', () => {

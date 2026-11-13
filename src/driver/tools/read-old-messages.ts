@@ -17,8 +17,10 @@ export const createReadOldMessagesTool = (
 ): CahciuaTool => createTool({
   name: 'read_old_messages',
   description:
-    'Read older messages in the current chat by their message IDs. '
-    + 'Use this when you are interested in a message which you know its ID but not its content.',
+    'Read older messages in the current chat by their message IDs, in full. '
+    + 'Use it when a quote was cut to a short preview, or a conversation summary cites a `(ref: msg#ID)` '
+    + 'and you need the original wording. Pass the ids exactly as they appear; a leading `msg#` is accepted. '
+    + 'Skip it when the preview already tells you what you need.',
   parameters: {
     type: 'object',
     properties: {
@@ -27,14 +29,16 @@ export const createReadOldMessagesTool = (
         minItems: 1,
         maxItems: MAX_READ_OLD_MESSAGE_IDS,
         items: { type: 'string' },
-        description: `The message IDs to read. Accepts up to ${MAX_READ_OLD_MESSAGE_IDS} IDs per call.`,
+        description: `The message IDs to read, as they appear in the chatlog or a summary ref. Accepts up to ${MAX_READ_OLD_MESSAGE_IDS} IDs per call.`,
       },
     },
     required: ['message_ids'],
   },
   execute: async input => {
     const { message_ids } = input as { message_ids: string[] };
-    const messageIds = [...new Set(message_ids.map(id => String(id)).filter(id => id !== ''))];
+    // Summaries cite refs as `msg#m4f8a2c01`; the prefix is notation, not part of the id.
+    const normalize = (id: string) => String(id).trim().replace(/^msg#/, '');
+    const messageIds = [...new Set(message_ids.map(normalize).filter(id => id !== ''))];
     if (messageIds.length === 0)
       return { content: JSON.stringify({ error: 'message_ids must contain at least one message ID.' }), requiresFollowUp: true };
     if (messageIds.length > MAX_READ_OLD_MESSAGE_IDS)
