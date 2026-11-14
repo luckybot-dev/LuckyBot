@@ -6,6 +6,7 @@ import { applyAnthropicCachePoints, messagesApi } from './messages';
 import { redactRequest } from './redaction';
 import { dumpLlmPayload } from './request-dump';
 import { responsesApi } from './responses';
+import { isToolChoiceLatchedOff, isToolChoiceRejection, latchToolChoiceOff, toolChoiceEndpointKey } from './tool-choice';
 import type { LlmEndpoint } from './types';
 import {
   fromChatCompletionsOutput,
@@ -78,15 +79,13 @@ const toChatToolSchema = (t: ToolSchema) => ({
 const optionalTools = <T>(mapped: T[] | undefined): T[] | undefined =>
   mapped === undefined || mapped.length === 0 ? undefined : mapped;
 
-export const callLlm = async (
+const callOnce = async (
   config: LlmCallConfig,
   entries: ConversationEntry[],
   rawSystem: string,
   tools: ToolSchema[] | undefined,
   options: LlmCallOptions,
 ): Promise<LlmCallResult> => {
-  if (config.forceToolChoice && (!tools || tools.length === 0))
-    throw new Error('forceToolChoice requires at least one tool');
   const apiFormat = config.apiFormat;
   const { log, label } = options;
 
@@ -162,4 +161,32 @@ export const callLlm = async (
     entries: fromChatCompletionsOutput([choice.message as ChatCompletionsAssistantMessage]),
     usage: response.usage,
   };
+};
+
+export const callLlm = async (
+  config: LlmCallConfig,
+  entries: ConversationEntry[],
+  rawSystem: string,
+  tools: ToolSchema[] | undefined,
+  options: LlmCallOptions,
+): Promise<LlmCallResult> => {
+  if (config.forceToolChoice && (!tools || tools.length === 0))
+    throw new Error('forceToolChoice requires at least one tool');
+  if (!config.forceToolChoice) return await callOnce(config, entries, rawSystem, tools, options);
+
+  // A provider that rejects the forced choice is called again without it, and
+  // the endpoint stays unforced for a while (src/llm/tool-choice.ts). The
+  // caller still checks the response for the tool call it needs.
+  const unforced = { ...config, forceToolChoice: undefined };
+  const key = toolChoiceEndpointKey(config);
+  if (isToolChoiceLatchedOff(key, Date.now())) return await callOnce(unforced, entries, rawSystem, tools, options);
+  try {
+    return await callOnce(config, entries, rawSystem, tools, options);
+  } catch (error) {
+    if (!isToolChoiceRejection(error)) throw error;
+    latchToolChoiceOff(key, Date.now());
+    options.log.withError(error).withFields({ label: options.label, model: config.model })
+      .warn('Provider rejected the forced tool_choice; calling without it');
+    return await callOnce(unforced, entries, rawSystem, tools, options);
+  }
 };

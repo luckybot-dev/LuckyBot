@@ -253,6 +253,114 @@ describe('runner turn loop', () => {
   });
 });
 
+describe('required tool call (issue #37)', () => {
+  const sendTool = (execute = vi.fn(() => ({ content: '{"ok":true}', requiresFollowUp: false }))) => ({
+    tool: createTool({
+      name: 'send_message',
+      description: 'Test tool.',
+      parameters: { type: 'object', properties: {} },
+      execute,
+    }),
+    execute,
+  });
+  const endTurnTool = createTool({
+    name: 'end_turn',
+    description: 'Test tool.',
+    parameters: { type: 'object', properties: {} },
+    execute: () => ({ content: '{"ok":true}', requiresFollowUp: false }),
+  });
+  const run = (tools: ReturnType<typeof createTool>[], onStepComplete: () => Promise<void>, log = logger) =>
+    createTestRunner().runStepLoop({
+      chatId: 'required-tool-call',
+      entries: initialEntries,
+      system: 'system',
+      tools,
+      budget: DEFAULT_TURN_BUDGET,
+      deadlineAtMs: Date.now() + 60_000,
+      forceToolChoice: 'any',
+      sendToolChoice: false,
+      onStepComplete,
+      checkInterrupt: () => false,
+      log,
+    });
+
+  it('retries a text-only reply on an endpoint that is never sent tool_choice', async () => {
+    const send = sendTool();
+    const sent = toolCallEntries({ callId: 'send', name: 'send_message', args: '{"text":"hello"}' });
+    mockCallLlm
+      .mockResolvedValueOnce({ entries: textEntries('hello'), usage: makeUsage(5, 6) })
+      .mockResolvedValueOnce({ entries: sent, usage: makeUsage(7, 8) });
+    const onStepComplete = vi.fn(async () => {});
+
+    await run([send.tool, endTurnTool], onStepComplete);
+
+    expect(mockCallLlm.mock.calls.map(call => call[0].forceToolChoice)).toEqual([undefined, undefined]);
+    expect(send.execute).toHaveBeenCalledOnce();
+    // The discarded text is never persisted, so it cannot teach later turns
+    // that plain text is a way to speak.
+    expect(onStepComplete).toHaveBeenCalledOnce();
+    expect(onStepComplete).toHaveBeenCalledWith(
+      [...sent, { kind: 'toolResult', callId: 'send', payload: '{"ok":true}', requiresFollowUp: false }],
+      makeUsage(12, 14),
+      expect.any(Number),
+    );
+  });
+
+  it('fails the wake-up instead of dropping the reply when every attempt is text-only', async () => {
+    const send = sendTool();
+    mockCallLlm.mockResolvedValue({ entries: textEntries('hello'), usage: makeUsage() });
+    const onStepComplete = vi.fn(async () => {});
+
+    await expect(run([send.tool, endTurnTool], onStepComplete))
+      .rejects.toThrow('Model did not satisfy forced tool choice after 4 attempts');
+
+    expect(mockCallLlm).toHaveBeenCalledTimes(4);
+    expect(send.execute).not.toHaveBeenCalled();
+    expect(onStepComplete).not.toHaveBeenCalled();
+  });
+
+  it('warns when text sits beside end_turn without send_message, and still ends the turn', async () => {
+    const send = sendTool();
+    const warn = vi.fn();
+    const spyLog = { withFields: () => spyLog, withError: () => spyLog, warn, log: vi.fn(), debug: vi.fn() };
+    mockCallLlm.mockResolvedValue({
+      entries: [{
+        kind: 'message',
+        role: 'assistant',
+        parts: [{ kind: 'text', text: 'a reply nobody sees' }, { kind: 'toolCall', callId: 'end', name: 'end_turn', args: '{}' }],
+        reasoning: undefined,
+      }],
+      usage: makeUsage(),
+    });
+    const onStepComplete = vi.fn(async () => {});
+
+    await run([send.tool, endTurnTool], onStepComplete, spyLog as unknown as typeof logger);
+
+    expect(mockCallLlm).toHaveBeenCalledOnce();
+    expect(send.execute).not.toHaveBeenCalled();
+    expect(onStepComplete).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith('Model wrote text beside end_turn without send_message; the text is not sent');
+  });
+
+  it('does not warn about that text when send_message is not offered (react_only)', async () => {
+    const warn = vi.fn();
+    const spyLog = { withFields: () => spyLog, withError: () => spyLog, warn, log: vi.fn(), debug: vi.fn() };
+    mockCallLlm.mockResolvedValue({
+      entries: [{
+        kind: 'message',
+        role: 'assistant',
+        parts: [{ kind: 'text', text: 'note' }, { kind: 'toolCall', callId: 'end', name: 'end_turn', args: '{}' }],
+        reasoning: undefined,
+      }],
+      usage: makeUsage(),
+    });
+
+    await run([endTurnTool], vi.fn(async () => {}), spyLog as unknown as typeof logger);
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
 describe('runner turn budget', () => {
   const workTool = (name: string, execute = vi.fn(() => ({ content: name, requiresFollowUp: true }))) => ({
     tool: createTool({

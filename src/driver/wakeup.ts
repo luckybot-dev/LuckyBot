@@ -230,8 +230,9 @@ export const executeWakeup = async (params: {
       {
         ...probeModel,
         timeoutSec: probeModel.timeoutSec ? Math.min(probeModel.timeoutSec, probeTimeoutSec) : probeTimeoutSec,
-        // Thinking-mode providers reject a forced tool_choice; they still call
-        // `decide` on their own when the choice is left free.
+        // Left free on a `forceToolChoice: false` endpoint, the model still
+        // calls `decide` on its own (no miss in ~10K unforced probes by
+        // 2026-11-14); a miss fails closed below.
         forceToolChoice: probeModel.forceToolChoice === false ? undefined : { name: 'decide' },
       },
       entries,
@@ -362,9 +363,11 @@ export const executeWakeup = async (params: {
       ...(reactOnly ? { reactOnly: true } : {}),
       deadlineAtMs,
       maxImagesAllowed: params.chatConfig.primary.model.maxImagesAllowed,
-      // `end_turn` is a tool, so forcing a tool call still permits silence.
-      // Omitted for providers that reject a forced tool_choice.
-      ...(params.chatConfig.primary.model.forceToolChoice === false ? {} : { forceToolChoice: 'any' as const }),
+      // Every primary step must call a tool; `end_turn` is one, so this still
+      // permits silence. `forceToolChoice: false` only keeps `tool_choice` out
+      // of the request: a step without a tool call is retried either way.
+      forceToolChoice: 'any',
+      ...(params.chatConfig.primary.model.forceToolChoice === false ? { sendToolChoice: false } : {}),
       onStepComplete: persistStep,
       checkInterrupt: () =>
         params.currentContext() !== params.contextAtStart

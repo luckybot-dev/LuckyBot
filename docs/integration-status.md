@@ -141,6 +141,38 @@ endpoints, for both the Probe (`{ name: 'decide' }`) and the primary turn
 (`'any'`). The model still calls the required tool without being forced; what
 is lost is the runner's "requirement not met, retry" safety net.
 
+**Superseded 2026-11-14 (issue #37).** The same model name is now answered by
+Command Code's `deepseek-v4.1-flash-dedicated` variant, which behaves
+differently on both counts:
+
+- Left free, it often writes the reply as plain text and calls no tool. With
+  `forceToolChoice: false` nothing retried, so the turn ended and the reply was
+  dropped: 75 of 183 primary steps on 2026-11-13/14 (47% on the 14th), against
+  0 of 367 on 2026-10-16..19. Every one of the 75 was an ordinary reply.
+- It accepts and honours a forced `tool_choice` with thinking still on. Against
+  the real system prompt and tool schemas, unforced calls were text-only in 10
+  of 36 runs and forced calls in 0 of 110; reasoning length and latency were
+  unchanged, and `reasoning_effort` low/default/high kept reasoning in both
+  modes. The production gateway path gave the same result (12 of 12 forced
+  calls honoured, 6 of 6 unforced controls text-only).
+
+So forcing is on again, and the flag no longer has to track the provider:
+`callLlm` detects a rejected `tool_choice`, repeats the call without it and
+keeps that endpoint unforced for 10 minutes (`src/llm/tool-choice.ts`), and the
+runner requires a tool call on every primary step whether or not the choice was
+sent, retrying a text-only response instead of ending the turn.
+
+Delivering the stray text as a message (OpenClaw's `message_tool` fallback) was
+considered and not done: 43% of `send_message` calls carry `reply_to`, which a
+text-only reply cannot express, and persisted text-only turns would show the
+model that plain text works.
+
+One side effect, not addressed: under a forced choice this variant writes
+`reply_to` before `text` or not at all (never after it, in 40 forced calls;
+left free, half of its calls put it after), and used it less than when left
+free (21-64% against ~100% in the same scenarios). Making `reply_to` required and nullable restored it in 30 of 30
+runs but was not verified on a message that should not quote anything.
+
 ### Still open at the time
 
 Both items are since resolved: the contact scope was granted (later superseded

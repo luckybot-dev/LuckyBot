@@ -16,7 +16,12 @@ interface CallModelStepParams {
   tools: CahciuaTool[];
   step: number;
   maxImagesAllowed?: number;
+  // The tool call this step must contain. A response without it is discarded
+  // and the model is called again, whether or not the request could force it.
   forceToolChoice?: ForceToolChoice;
+  // `false` keeps that requirement but leaves `tool_choice` out of the request,
+  // for an endpoint configured with `forceToolChoice: false`.
+  sendToolChoice?: boolean;
   options: ModelStepOptions;
   log: Logger;
 }
@@ -55,6 +60,16 @@ const budgetSkipped = (callId: string): ToolResult => ({
   requiresFollowUp: true,
 });
 
+const assistantTextLength = (entries: ConversationEntry[]): number => {
+  let length = 0;
+  for (const entry of entries) {
+    if (entry.kind !== 'message' || entry.role !== 'assistant') continue;
+    for (const part of entry.parts)
+      if (part.kind === 'text') length += part.text.trim().length;
+  }
+  return length;
+};
+
 const addUsage = (left: LlmCallUsage, right: LlmCallUsage): LlmCallUsage => ({
   inputTokens: left.inputTokens + right.inputTokens,
   outputTokens: left.outputTokens + right.outputTokens,
@@ -80,7 +95,11 @@ export const createRunner = (config: RunnerConfig) => {
       const cappedByDeadline = !config.timeoutSec || remainingSec < config.timeoutSec;
       const timeoutSec = cappedByDeadline ? remainingSec : config.timeoutSec!;
       return callLlm(
-        { ...config, timeoutSec, forceToolChoice: params.forceToolChoice },
+        {
+          ...config,
+          timeoutSec,
+          forceToolChoice: params.sendToolChoice === false ? undefined : params.forceToolChoice,
+        },
         params.entries,
         params.system,
         toolSchemas,
@@ -105,7 +124,10 @@ export const createRunner = (config: RunnerConfig) => {
 
     if (params.forceToolChoice) {
       const choice = params.forceToolChoice;
-      // Providers may ignore tool_choice. Rejected responses contribute usage,
+      // A provider may ignore tool_choice, reject it (callLlm then calls
+      // without it) or never be sent it. A reply written as plain text is not a
+      // message: only tool calls act, so such a step would end the turn with
+      // the text discarded (issue #37). Rejected responses contribute usage,
       // but only the selected/final response can reach tool execution.
       const requirementMet = () => {
         const toolCalls = extractToolCalls(result.entries);
@@ -121,13 +143,27 @@ export const createRunner = (config: RunnerConfig) => {
           attempt: retry,
           maxRetries: MAX_FORCE_TOOL_RETRIES,
           forceToolChoice: choice,
-        }).log('forceToolChoice: requirement not met, retrying');
+          toolChoiceSent: params.sendToolChoice !== false,
+          textChars: assistantTextLength(result.entries),
+        }).warn('Model step lacks the required tool call; retrying');
 
         result = await invokeModel();
         usage = addUsage(usage, result.usage);
       }
       if (!requirementMet())
         throw new Error(`Model did not satisfy forced tool choice after ${MAX_FORCE_TOOL_RETRIES + 1} attempts`);
+    }
+
+    // end_turn closes the turn, so text written beside it and no send_message
+    // reaches nobody. Seen once in 183 unforced primary steps (2026-11-14) and
+    // not retried: the model did choose to end. Logged so a rise is visible.
+    const calledNames = new Set(extractToolCalls(result.entries).map(toolCall => toolCall.name));
+    if (calledNames.has('end_turn') && !calledNames.has('send_message')
+      && tools.some(tool => tool.name === 'send_message')) {
+      const textChars = assistantTextLength(result.entries);
+      if (textChars > 0)
+        params.log.withFields({ chatId: params.chatId, step: params.step, textChars })
+          .warn('Model wrote text beside end_turn without send_message; the text is not sent');
     }
 
     return {
@@ -190,6 +226,7 @@ export const createRunner = (config: RunnerConfig) => {
         options,
         maxImagesAllowed: params.maxImagesAllowed,
         forceToolChoice: params.forceToolChoice,
+        sendToolChoice: params.sendToolChoice,
         log: params.log,
       }),
       executeToolStep: (modelStep, options) => executeToolStep({
